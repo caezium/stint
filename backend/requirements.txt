@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+libxrk
+pyarrow
+numpy
+aiosqlite
+python-multipart
