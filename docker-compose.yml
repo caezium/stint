@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: kartlab-backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
+      - ./backend/app:/app/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: kartlab-frontend
+    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/next.config.ts:/app/next.config.ts
+    environment:
+      BACKEND_URL: "http://backend:8001"
+    stdin_open: true
+    tty: true
+    depends_on:
+      - backend
+    restart: unless-stopped

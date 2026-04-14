@@ -1,0 +1,38 @@
+"""FastAPI application for KartLab racing telemetry."""
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .database import init_db
+from .routers import upload, sessions, channels, sectors, math_channels, layouts, profiles, export
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
+
+app = FastAPI(title="KartLab", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(upload.router, prefix="/api")
+app.include_router(sessions.router, prefix="/api")
+app.include_router(channels.router, prefix="/api")
+app.include_router(sectors.router, prefix="/api")
+app.include_router(math_channels.router, prefix="/api")
+app.include_router(layouts.router, prefix="/api")
+app.include_router(profiles.router, prefix="/api")
+app.include_router(export.router, prefix="/api")
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "kartlab"}
