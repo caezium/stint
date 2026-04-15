@@ -6,9 +6,14 @@ import {
   fetchSessions,
   fetchDrivers,
   fetchVehicles,
+  fetchSmartCollections,
+  createSmartCollection,
+  deleteSmartCollection,
+  fetchSmartCollectionSessions,
   type Session,
   type Driver,
   type Vehicle,
+  type SmartCollection,
 } from "@/lib/api";
 import { formatLapTime } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,6 +30,13 @@ export default function SessionsPage() {
   const [vehicleFilter, setVehicleFilter] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [collections, setCollections] = useState<SmartCollection[]>([]);
+  const [activeCollection, setActiveCollection] = useState<number | null>(null);
+  const [collectionSessions, setCollectionSessions] = useState<Session[] | null>(null);
+
+  function refreshCollections() {
+    fetchSmartCollections().then(setCollections).catch(() => setCollections([]));
+  }
 
   useEffect(() => {
     fetchSessions()
@@ -33,9 +45,31 @@ export default function SessionsPage() {
       .finally(() => setLoading(false));
     fetchDrivers().then(setDrivers).catch(() => setDrivers([]));
     fetchVehicles().then(setVehicles).catch(() => setVehicles([]));
+    refreshCollections();
   }, []);
 
-  const filtered = sessions.filter((s) => {
+  useEffect(() => {
+    if (activeCollection == null) {
+      setCollectionSessions(null);
+      return;
+    }
+    fetchSmartCollectionSessions(activeCollection)
+      .then(setCollectionSessions)
+      .catch(() => setCollectionSessions([]));
+  }, [activeCollection]);
+
+  async function saveCurrentAsCollection() {
+    const name = prompt("Collection name?");
+    if (!name) return;
+    await createSmartCollection(name, {
+      driver_id: driverFilter === "" ? null : driverFilter,
+      vehicle_id: vehicleFilter === "" ? null : vehicleFilter,
+    });
+    refreshCollections();
+  }
+
+  const baseList = collectionSessions ?? sessions;
+  const filtered = baseList.filter((s) => {
     const q = search.toLowerCase();
     const matchesSearch =
       s.venue.toLowerCase().includes(q) ||
@@ -142,6 +176,43 @@ export default function SessionsPage() {
           )}
         </div>
       )}
+
+      {/* Smart collections sidebar */}
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">Collections:</span>
+        <Button
+          size="sm"
+          variant={activeCollection == null ? "default" : "secondary"}
+          onClick={() => setActiveCollection(null)}
+        >
+          All
+        </Button>
+        {collections.map((c) => (
+          <div key={c.id} className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant={activeCollection === c.id ? "default" : "secondary"}
+              onClick={() => setActiveCollection(c.id)}
+            >
+              {c.name}
+            </Button>
+            <button
+              onClick={async () => {
+                await deleteSmartCollection(c.id);
+                refreshCollections();
+                if (activeCollection === c.id) setActiveCollection(null);
+              }}
+              className="text-muted-foreground hover:text-red-400"
+              title="Delete"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <Button size="sm" variant="secondary" onClick={saveCurrentAsCollection}>
+          + Save current filter
+        </Button>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map((session) => (
