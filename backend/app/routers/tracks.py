@@ -141,10 +141,21 @@ async def set_track_sf_line(track_id: int, body: SfLineBody):
             "UPDATE tracks SET sf_line_json=? WHERE id=?",
             (json.dumps(body.dict()), track_id),
         )
+        # Gather bound sessions BEFORE closing db handle
+        cur = await db.execute("SELECT id FROM sessions WHERE track_id=?", (track_id,))
+        bound = [r["id"] for r in await cur.fetchall()]
         await db.commit()
-        return {"ok": True}
     finally:
         await db.close()
+    # Auto-recompute every session bound to this track
+    recomputed: list[dict] = []
+    for sid in bound:
+        try:
+            r = await recompute_session_from_track(sid, track_id)
+            recomputed.append({"session_id": sid, "laps": len(r.get("laps", []))})
+        except Exception as e:
+            recomputed.append({"session_id": sid, "error": str(e)})
+    return {"ok": True, "recomputed": recomputed}
 
 
 class PitLaneVertex(BaseModel):
@@ -183,10 +194,17 @@ async def set_track_splits(track_id: int, body: SplitsBody):
             "UPDATE tracks SET split_lines_json=? WHERE id=?",
             (json.dumps([s.dict() for s in body.splits]), track_id),
         )
+        cur = await db.execute("SELECT id FROM sessions WHERE track_id=?", (track_id,))
+        bound = [r["id"] for r in await cur.fetchall()]
         await db.commit()
-        return {"ok": True}
     finally:
         await db.close()
+    for sid in bound:
+        try:
+            await recompute_session_from_track(sid, track_id)
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @router.delete("/tracks/{track_id}")
@@ -251,8 +269,14 @@ async def match_track(req: MatchRequest):
     return {"match": best, "threshold_m": 500.0, "matched": bool(best and best["distance_m"] < 500)}
 
 
-def _compute_crossings(lat, lon, tc, line: dict) -> list[int]:
-    """Return timecodes at which trajectory crosses the given line."""
+def _compute_crossings(lat, lon, tc, line: dict, min_gap_ms: int = 8000) -> list[int]:
+    """Return timecodes at which trajectory crosses the given line.
+
+    Only counts crossings in a single direction (determined by majority vote
+    across all raw crossings) to avoid double-counting when the line intersects
+    two parallel track sections. Also enforces a minimum gap between accepted
+    crossings to dedupe noise.
+    """
     mlat = (line["lat1"] + line["lat2"]) / 2
     mpd_lat = 111320.0
     mpd_lon = 111320.0 * max(0.01, math.cos(math.radians(mlat)))
@@ -262,15 +286,33 @@ def _compute_crossings(lat, lon, tc, line: dict) -> list[int]:
 
     line_a = to_xy(line["lat1"], line["lon1"])
     line_b = to_xy(line["lat2"], line["lon2"])
+    lx, ly = (line_b[0] - line_a[0], line_b[1] - line_a[1])
+    # Line normal (perpendicular): (-ly, lx). Motion dot normal > 0 = one direction.
     n = min(len(lat), len(lon), len(tc))
-    crossings: list[int] = []
+    raw: list[tuple[int, int]] = []  # (timecode, direction_sign)
     prev = to_xy(lat[0], lon[0])
     for i in range(1, n):
         cur = to_xy(lat[i], lon[i])
         if _segments_cross(prev, cur, line_a, line_b):
-            crossings.append(tc[i])
+            mx, my = (cur[0] - prev[0], cur[1] - prev[1])
+            dot = (-ly) * mx + lx * my
+            sign = 1 if dot >= 0 else -1
+            raw.append((tc[i], sign))
         prev = cur
-    return crossings
+    if not raw:
+        return []
+    # Majority direction
+    pos = sum(1 for _, s in raw if s > 0)
+    chosen = 1 if pos >= len(raw) - pos else -1
+    # Filter to chosen direction + apply minimum gap
+    out: list[int] = []
+    for t, s in raw:
+        if s != chosen:
+            continue
+        if out and (t - out[-1]) < min_gap_ms:
+            continue
+        out.append(t)
+    return out
 
 
 async def recompute_session_from_track(session_id: str, track_id: int) -> dict:
