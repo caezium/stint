@@ -5,7 +5,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSessionStore } from "@/stores/session-store";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchTrack, fetchTrackOverlay, fetchMathDefaults, type TrackData, type TrackOverlayData } from "@/lib/api";
+import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchMathDefaults, type TrackData, type TrackOverlayData, type Track } from "@/lib/api";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
 import { HistogramChart } from "@/components/charts/histogram-chart";
@@ -89,6 +89,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   const { refLap, altLap, extraLaps, crossSessionLaps } = useLapStore();
   const { xAxisMode, setXAxisMode, zoomRange, setZoomRange } = useCursorStore();
   const [track, setTrack] = useState<TrackData | null>(null);
+  const [boundTrack, setBoundTrack] = useState<Track | null>(null);
   // Keyed by `${sessionId}:${lapNum}` to support cross-session laps
   const [lapTracks, setLapTracks] = useState<Map<string, TrackData>>(new Map());
   const [trackOverlay, setTrackOverlay] = useState<TrackOverlayData | null>(null);
@@ -132,6 +133,36 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     fetchTrack(sessionId).then(setTrack).catch(() => null);
   }, [sessionId]);
+
+  // Fetch the bound Track for S/F + split overlays on the track map
+  useEffect(() => {
+    const tid = session?.track_id;
+    if (tid == null) {
+      setBoundTrack(null);
+      return;
+    }
+    let cancelled = false;
+    fetchTrackById(tid)
+      .then((t) => { if (!cancelled) setBoundTrack(t); })
+      .catch(() => { if (!cancelled) setBoundTrack(null); });
+    return () => { cancelled = true; };
+  }, [session?.track_id]);
+
+  // Parse sf_line / split_lines whether they come as objects or JSON strings
+  const { sfLineForMap, splitsForMap } = useMemo(() => {
+    const parse = <T,>(v: unknown): T | null => {
+      if (v == null) return null;
+      if (typeof v === "string") {
+        try { return JSON.parse(v) as T; } catch { return null; }
+      }
+      return v as T;
+    };
+    type Ln = { lat1: number; lon1: number; lat2: number; lon2: number };
+    const sf = parse<Ln>(boundTrack?.sf_line as unknown);
+    // For SVG TrackMap, we need to convert to { lat1, lon1, lat2, lon2 } (same shape)
+    const splits = parse<Ln[]>(boundTrack?.split_lines as unknown) ?? [];
+    return { sfLineForMap: sf, splitsForMap: splits };
+  }, [boundTrack]);
 
   // Prewarm default math channels cache for the current ref lap
   useEffect(() => {
@@ -672,6 +703,8 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                     laps={convertedMapTraces}
                     valueLabel={valueLabel}
                     valueUnits={valueUnits}
+                    sfLine={sfLineForMap}
+                    splitLines={splitsForMap}
                     interactive
                   />
                 ) : (
