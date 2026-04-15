@@ -5,3 +5,4 @@ pyarrow
 numpy
 aiosqlite
 python-multipart
+reportlab
