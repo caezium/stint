@@ -550,6 +550,16 @@ export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void
   if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
 }
 
+export async function fetchMathDefaults(
+  sessionId: string, lap: number, channel?: string,
+): Promise<Record<string, number[]>> {
+  const qs = new URLSearchParams({ lap: String(lap) });
+  if (channel) qs.set("channel", channel);
+  const res = await fetch(`/api/sessions/${sessionId}/math-defaults?${qs}`);
+  if (!res.ok) throw new Error(`Failed to fetch math defaults: ${res.status}`);
+  return res.json();
+}
+
 export interface LogSheet {
   weather: string;
   track_temp: number;
