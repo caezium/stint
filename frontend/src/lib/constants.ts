@@ -16,8 +16,16 @@ export const CHANNEL_CATEGORIES: Record<string, string[]> = {
   Brakes: ["Brake"],
   Lap: ["Lap", "Beacon"],
   Math: [],
+  "Math (Default)": ["DriverIntent", "CombinedG", "LateralLoadTransfer", "TractivePower"],
   Other: [],
 };
+
+export const DEFAULT_MATH_CHANNELS = [
+  { name: "DriverIntent", units: "state" },
+  { name: "CombinedG", units: "g" },
+  { name: "LateralLoadTransfer", units: "indicator" },
+  { name: "TractivePower", units: "kW" },
+];
 
 export function formatLapTime(ms: number): string {
   if (ms <= 0 || !isFinite(ms)) return "--:--.---";
