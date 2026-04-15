@@ -283,6 +283,46 @@ async def get_distance_channel(
     }
 
 
+@router.get("/sessions/{session_id}/laps/diagnostics")
+async def laps_diagnostics(session_id: str):
+    """
+    Report the difference between libxrk-reported lap start times and the
+    first telemetry sample timecode per lap. Useful for spotting lap-start
+    misalignment — anything >50ms is flagged.
+    """
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT num, start_time_ms FROM laps WHERE session_id = ? ORDER BY num",
+            (session_id,),
+        )
+        lap_rows = [dict(r) for r in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+    diags = []
+    for lap in lap_rows:
+        tbl = get_resampled_lap_data(session_id, ["GPS Latitude"], lap["num"])
+        first_tc = None
+        if tbl is not None:
+            tc = tbl.column("timecodes").to_pylist()
+            if tc:
+                first_tc = tc[0]
+        diff = None
+        if first_tc is not None:
+            diff = int(first_tc - lap["start_time_ms"])
+        diags.append(
+            {
+                "num": lap["num"],
+                "start_time_ms_libxrk": lap["start_time_ms"],
+                "first_sample_timecode_ms": first_tc,
+                "diff_ms": diff,
+                "flagged": diff is not None and abs(diff) > 50,
+            }
+        )
+    return {"laps": diags}
+
+
 @router.get("/sessions/{session_id}/delta-t")
 async def get_delta_t(
     session_id: str,

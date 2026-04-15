@@ -21,6 +21,7 @@ import { MathChannelEditor } from "@/components/math-channel-editor";
 import { LayoutManager } from "@/components/layout-manager";
 import { SessionNotes } from "@/components/session-notes";
 import { UnitSettings } from "@/components/unit-settings";
+import { KeyboardHelp } from "@/components/keyboard-help";
 import {
   useUnitsStore,
   isSpeedUnits,
@@ -532,6 +533,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
 
         {/* Unit settings */}
         <UnitSettings />
+        <KeyboardHelp />
 
         <div className="w-px h-4 bg-border" />
 
