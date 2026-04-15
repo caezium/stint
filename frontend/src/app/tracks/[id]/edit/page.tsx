@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import {
   fetchTrackById,
   setTrackSfLine,
@@ -16,8 +17,83 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+const TrackMapLeaflet = dynamic(() => import("@/components/track-map-leaflet"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-[500px] bg-[#0c0c0c] rounded flex items-center justify-center text-sm text-muted-foreground">
+      Loading map…
+    </div>
+  ),
+});
+
 type Mode = "sf" | "split" | "pit";
+type PlaceMode = "1click" | "2click";
 type LatLon = { lat: number; lon: number };
+
+// Half-width of an auto-placed S/F or split line, in meters.
+const AUTO_HALF_WIDTH_M = 15;
+
+function metersToLatLonOffset(
+  lat: number,
+  dxMeters: number,
+  dyMeters: number
+): { dLat: number; dLon: number } {
+  const dLat = dyMeters / 111320;
+  const cosLat = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+  const dLon = dxMeters / (111320 * cosLat);
+  return { dLat, dLon };
+}
+
+function findNearestOutlineIndex(outline: number[][], lat: number, lon: number): number {
+  if (!outline || outline.length === 0) return -1;
+  const cosLat = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < outline.length; i++) {
+    const dLat = outline[i][0] - lat;
+    const dLon = (outline[i][1] - lon) * cosLat;
+    const d = dLat * dLat + dLon * dLon;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function perpendicularLineAt(
+  outline: number[][],
+  idx: number,
+  halfWidthM: number
+): SfLine | null {
+  const n = outline.length;
+  if (n < 2 || idx < 0) return null;
+  // Handle wrap-around: previous and next neighbours.
+  const prev = outline[(idx - 1 + n) % n];
+  const next = outline[(idx + 1) % n];
+  const center = outline[idx];
+  const lat = center[0];
+  const cosLat = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+  // Tangent in local meters.
+  const tx = (next[1] - prev[1]) * 111320 * cosLat;
+  const ty = (next[0] - prev[0]) * 111320;
+  const len = Math.hypot(tx, ty);
+  if (len === 0) return null;
+  const ux = tx / len;
+  const uy = ty / len;
+  // 90° rotation: (ux, uy) -> (-uy, ux)
+  const px = -uy;
+  const py = ux;
+  // Endpoint offsets in meters.
+  const dx1 = px * halfWidthM;
+  const dy1 = py * halfWidthM;
+  const { dLat: dLat1, dLon: dLon1 } = metersToLatLonOffset(lat, dx1, dy1);
+  const lat1 = center[0] + dLat1;
+  const lon1 = center[1] + dLon1;
+  const lat2 = center[0] - dLat1;
+  const lon2 = center[1] - dLon1;
+  return { lat1, lon1, lat2, lon2 };
+}
 
 export default function TrackEditPage() {
   const params = useParams();
@@ -25,7 +101,9 @@ export default function TrackEditPage() {
 
   const [track, setTrack] = useState<Track | null>(null);
   const [mode, setMode] = useState<Mode>("sf");
-  const [sfPoints, setSfPoints] = useState<LatLon[]>([]);
+  const [placeMode, setPlaceMode] = useState<PlaceMode>("1click");
+  const [sfClickBuf, setSfClickBuf] = useState<LatLon[]>([]);
+  const [sfLine, setSfLine] = useState<SfLine | null>(null);
   const [splits, setSplits] = useState<SfLine[]>([]);
   const [pendingSplit, setPendingSplit] = useState<LatLon[]>([]);
   const [pitLane, setPitLane] = useState<LatLon[]>([]);
@@ -38,7 +116,8 @@ export default function TrackEditPage() {
     fetchTrackById(id).then((t) => {
       setTrack(t);
       if (t.sf_line) {
-        setSfPoints([
+        setSfLine(t.sf_line);
+        setSfClickBuf([
           { lat: t.sf_line.lat1, lon: t.sf_line.lon1 },
           { lat: t.sf_line.lat2, lon: t.sf_line.lon2 },
         ]);
@@ -51,71 +130,6 @@ export default function TrackEditPage() {
     });
   }, [id]);
 
-  const W = 900;
-  const H = 620;
-
-  const bounds = useMemo(() => {
-    if (!track || !track.gps_outline.length) return null;
-    let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-    for (const [la, lo] of track.gps_outline) {
-      if (la < minLat) minLat = la;
-      if (la > maxLat) maxLat = la;
-      if (lo < minLon) minLon = lo;
-      if (lo > maxLon) maxLon = lo;
-    }
-    const dLat = maxLat - minLat || 1e-6;
-    const dLon = maxLon - minLon || 1e-6;
-    const pad = 30;
-    const scale = Math.min((W - pad * 2) / dLon, (H - pad * 2) / dLat);
-    const lonToX = (lo: number) => pad + (lo - minLon) * scale;
-    const latToY = (la: number) => H - pad - (la - minLat) * scale;
-    const xToLon = (x: number) => minLon + (x - pad) / scale;
-    const yToLat = (y: number) => minLat + (H - pad - y) / scale;
-    return { lonToX, latToY, xToLon, yToLat };
-  }, [track]);
-
-  if (!track || !bounds) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading track…</div>;
-  }
-
-  const pathD = track.gps_outline
-    .map(([la, lo], i) => `${i === 0 ? "M" : "L"} ${bounds.lonToX(lo).toFixed(1)} ${bounds.latToY(la).toFixed(1)}`)
-    .join(" ");
-
-  function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
-    if (!bounds) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const lat = bounds.yToLat(y);
-    const lon = bounds.xToLon(x);
-    if (mode === "sf") {
-      setSfPoints((p) => (p.length >= 2 ? [{ lat, lon }] : [...p, { lat, lon }]));
-    } else if (mode === "split") {
-      setPendingSplit((p) => {
-        const nxt = [...p, { lat, lon }];
-        if (nxt.length === 2) {
-          setSplits((s) => [
-            ...s,
-            { lat1: nxt[0].lat, lon1: nxt[0].lon, lat2: nxt[1].lat, lon2: nxt[1].lon },
-          ]);
-          return [];
-        }
-        return nxt;
-      });
-    } else {
-      // pit-lane mode: append vertex, reopen if we were closed
-      setPitClosed(false);
-      setPitLane((p) => [...p, { lat, lon }]);
-    }
-    setMsg(null);
-  }
-
-  function handleSvgDblClick() {
-    if (mode !== "pit") return;
-    if (pitLane.length >= 3) setPitClosed(true);
-  }
-
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
       if (mode !== "pit") return;
@@ -127,6 +141,63 @@ export default function TrackEditPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [mode, pitLane.length]);
+
+  if (!track) {
+    return <div className="p-6 text-sm text-muted-foreground">Loading track…</div>;
+  }
+
+  function handleMapClick(pt: { lat: number; lon: number }) {
+    if (!track) return;
+    const outline = track.gps_outline;
+    if (mode === "sf") {
+      if (placeMode === "1click") {
+        const idx = findNearestOutlineIndex(outline, pt.lat, pt.lon);
+        const line = perpendicularLineAt(outline, idx, AUTO_HALF_WIDTH_M);
+        if (line) {
+          setSfLine(line);
+          setSfClickBuf([
+            { lat: line.lat1, lon: line.lon1 },
+            { lat: line.lat2, lon: line.lon2 },
+          ]);
+        }
+      } else {
+        setSfClickBuf((p) => {
+          const nxt = p.length >= 2 ? [{ lat: pt.lat, lon: pt.lon }] : [...p, { lat: pt.lat, lon: pt.lon }];
+          if (nxt.length === 2) {
+            setSfLine({ lat1: nxt[0].lat, lon1: nxt[0].lon, lat2: nxt[1].lat, lon2: nxt[1].lon });
+          } else {
+            setSfLine(null);
+          }
+          return nxt;
+        });
+      }
+    } else if (mode === "split") {
+      if (splits.length >= 8) return;
+      if (placeMode === "1click") {
+        const idx = findNearestOutlineIndex(outline, pt.lat, pt.lon);
+        const line = perpendicularLineAt(outline, idx, AUTO_HALF_WIDTH_M);
+        if (line) {
+          setSplits((s) => [...s, line]);
+        }
+      } else {
+        setPendingSplit((p) => {
+          const nxt = [...p, { lat: pt.lat, lon: pt.lon }];
+          if (nxt.length === 2) {
+            setSplits((s) => [
+              ...s,
+              { lat1: nxt[0].lat, lon1: nxt[0].lon, lat2: nxt[1].lat, lon2: nxt[1].lon },
+            ]);
+            return [];
+          }
+          return nxt;
+        });
+      }
+    } else {
+      setPitClosed(false);
+      setPitLane((p) => [...p, { lat: pt.lat, lon: pt.lon }]);
+    }
+    setMsg(null);
+  }
 
   async function savePitLane() {
     if (pitLane.length < 3) {
@@ -146,15 +217,10 @@ export default function TrackEditPage() {
   }
 
   async function saveSf() {
-    if (sfPoints.length !== 2) return;
+    if (!sfLine) return;
     setBusy(true);
     try {
-      await setTrackSfLine(id, {
-        lat1: sfPoints[0].lat,
-        lon1: sfPoints[0].lon,
-        lat2: sfPoints[1].lat,
-        lon2: sfPoints[1].lon,
-      });
+      await setTrackSfLine(id, sfLine);
       setMsg("S/F line saved");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Failed");
@@ -202,6 +268,8 @@ export default function TrackEditPage() {
     }
   }
 
+  const pitPolygonLL = pitClosed && pitLane.length >= 3 ? pitLane.map((p) => [p.lat, p.lon]) : undefined;
+
   return (
     <div className="max-w-[1200px] mx-auto p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -216,105 +284,19 @@ export default function TrackEditPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <Card>
           <CardContent className="p-2">
-            <svg
-              width="100%"
-              viewBox={`0 0 ${W} ${H}`}
-              onClick={handleSvgClick}
-              onDoubleClick={handleSvgDblClick}
-              className="bg-[#0c0c0c] rounded cursor-crosshair"
-              style={{ maxHeight: 620 }}
-            >
-              <path d={pathD} stroke="#a3a3a3" strokeWidth={1.5} fill="none" />
-              {/* Pit-lane polygon */}
-              {pitLane.length > 0 && (() => {
-                const pts = pitLane
-                  .map((p) => `${bounds.lonToX(p.lon).toFixed(1)},${bounds.latToY(p.lat).toFixed(1)}`)
-                  .join(" ");
-                if (pitClosed && pitLane.length >= 3) {
-                  return (
-                    <polygon
-                      points={pts}
-                      fill="#f97316"
-                      fillOpacity={0.3}
-                      stroke="#f97316"
-                      strokeWidth={2}
-                    />
-                  );
-                }
-                return (
-                  <>
-                    <polyline
-                      points={pts}
-                      fill="none"
-                      stroke="#f97316"
-                      strokeWidth={2}
-                      strokeDasharray="4 2"
-                    />
-                    {pitLane.map((p, i) => (
-                      <circle
-                        key={`pl-${i}`}
-                        cx={bounds.lonToX(p.lon)}
-                        cy={bounds.latToY(p.lat)}
-                        r={3.5}
-                        fill="#f97316"
-                      />
-                    ))}
-                  </>
-                );
-              })()}
-              {/* S/F line */}
-              {sfPoints.map((p, i) => (
-                <circle key={`sf-${i}`} cx={bounds.lonToX(p.lon)} cy={bounds.latToY(p.lat)} r={5} fill="#ef4444" />
-              ))}
-              {sfPoints.length === 2 && (
-                <>
-                  <line
-                    x1={bounds.lonToX(sfPoints[0].lon)}
-                    y1={bounds.latToY(sfPoints[0].lat)}
-                    x2={bounds.lonToX(sfPoints[1].lon)}
-                    y2={bounds.latToY(sfPoints[1].lat)}
-                    stroke="#ef4444"
-                    strokeWidth={3}
-                  />
-                  <text
-                    x={(bounds.lonToX(sfPoints[0].lon) + bounds.lonToX(sfPoints[1].lon)) / 2}
-                    y={(bounds.latToY(sfPoints[0].lat) + bounds.latToY(sfPoints[1].lat)) / 2 - 6}
-                    fill="#ef4444"
-                    fontSize={14}
-                    textAnchor="middle"
-                  >
-                    S/F
-                  </text>
-                </>
-              )}
-              {/* Splits */}
-              {splits.map((s, i) => (
-                <g key={`sp-${i}`}>
-                  <line
-                    x1={bounds.lonToX(s.lon1)}
-                    y1={bounds.latToY(s.lat1)}
-                    x2={bounds.lonToX(s.lon2)}
-                    y2={bounds.latToY(s.lat2)}
-                    stroke="#22c55e"
-                    strokeWidth={2.5}
-                    strokeDasharray="6 3"
-                  />
-                  <text
-                    x={(bounds.lonToX(s.lon1) + bounds.lonToX(s.lon2)) / 2}
-                    y={(bounds.latToY(s.lat1) + bounds.latToY(s.lat2)) / 2 - 6}
-                    fill="#22c55e"
-                    fontSize={12}
-                    textAnchor="middle"
-                  >
-                    S{i + 1}
-                  </text>
-                </g>
-              ))}
-              {/* pending split first point */}
-              {pendingSplit.map((p, i) => (
-                <circle key={`pp-${i}`} cx={bounds.lonToX(p.lon)} cy={bounds.latToY(p.lat)} r={4} fill="#22c55e" />
-              ))}
-            </svg>
+            <TrackMapLeaflet
+              outline={track.gps_outline}
+              sfLine={sfLine}
+              splitLines={splits}
+              pitLane={pitPolygonLL}
+              onMapClick={handleMapClick}
+              height={620}
+            />
+            {pendingSplit.length === 1 && placeMode === "2click" && (
+              <p className="text-xs text-muted-foreground px-2 pt-2">
+                Split: click second point to complete.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -346,16 +328,48 @@ export default function TrackEditPage() {
                 </Button>
               </div>
 
+              {mode !== "pit" && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">Placement:</span>
+                  <Button
+                    size="sm"
+                    variant={placeMode === "1click" ? "default" : "secondary"}
+                    onClick={() => {
+                      setPlaceMode("1click");
+                      setPendingSplit([]);
+                    }}
+                  >
+                    1-click perpendicular
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={placeMode === "2click" ? "default" : "secondary"}
+                    onClick={() => setPlaceMode("2click")}
+                  >
+                    2-click
+                  </Button>
+                </div>
+              )}
+
               {mode === "sf" ? (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Click two points on the track to place the S/F line.
+                    {placeMode === "1click"
+                      ? "Click once on the track — a perpendicular S/F line is placed for you."
+                      : "Click two points on the track to place the S/F line."}
                   </p>
                   <div className="flex gap-2">
-                    <Button size="sm" onClick={saveSf} disabled={sfPoints.length !== 2 || busy}>
+                    <Button size="sm" onClick={saveSf} disabled={!sfLine || busy}>
                       Save S/F
                     </Button>
-                    <Button size="sm" variant="secondary" onClick={() => setSfPoints([])}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setSfClickBuf([]);
+                        setSfLine(null);
+                      }}
+                    >
                       Clear
                     </Button>
                   </div>
@@ -363,7 +377,9 @@ export default function TrackEditPage() {
               ) : mode === "split" ? (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Click two points to drop a split. Each split = 2 points. Up to 8 splits.
+                    {placeMode === "1click"
+                      ? "Click once per split — each is auto-perpendicular to the track. Up to 8."
+                      : "Click two points per split. Up to 8 splits."}
                   </p>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={saveSplits} disabled={busy}>
@@ -392,7 +408,7 @@ export default function TrackEditPage() {
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Click to add polygon vertices. Double-click or press Enter to close. Save to persist.
+                    Click to add polygon vertices. Press Enter to close. Save to persist.
                   </p>
                   <div className="text-xs text-muted-foreground">
                     Vertices: {pitLane.length} {pitClosed ? "(closed)" : ""}
@@ -404,14 +420,20 @@ export default function TrackEditPage() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => { setPitLane([]); setPitClosed(false); }}
+                      onClick={() => {
+                        setPitLane([]);
+                        setPitClosed(false);
+                      }}
                     >
                       Clear
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => { setPitLane((p) => p.slice(0, -1)); setPitClosed(false); }}
+                      onClick={() => {
+                        setPitLane((p) => p.slice(0, -1));
+                        setPitClosed(false);
+                      }}
                       disabled={pitLane.length === 0}
                     >
                       Undo
