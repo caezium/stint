@@ -191,6 +191,53 @@ async def upload_file(file: UploadFile):
                     auto_track_applied = {"track_id": int(best["id"]), "track_name": best["name"]}
                 except Exception:
                     pass
+            elif (not best) or (best_d >= 500):
+                # No nearby existing track — auto-create a new one so user can
+                # drop an S/F line without needing to bootstrap the track row.
+                try:
+                    # Approximate outline length in meters (sum of segment lengths).
+                    length_m: float | None = None
+                    if len(gps_outline) >= 2:
+                        total = 0.0
+                        for i in range(1, len(gps_outline)):
+                            la1, lo1 = gps_outline[i - 1]
+                            la2, lo2 = gps_outline[i]
+                            mlat = (la1 + la2) / 2.0
+                            dx = (lo2 - lo1) * 111320.0 * max(0.01, _math.cos(_math.radians(mlat)))
+                            dy = (la2 - la1) * 111320.0
+                            total += _math.hypot(dx, dy)
+                        length_m = total
+                    track_name = (result.get("venue") or "").strip() or "Unnamed track"
+                    db = await get_db()
+                    try:
+                        cur = await db.execute(
+                            """INSERT INTO tracks
+                               (name, country, length_m, gps_outline_json, sector_defs_json,
+                                short_name, city, type, surface, timezone,
+                                sf_line_json, split_lines_json, pit_lane_json)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                track_name, "", length_m if length_m is not None else 0,
+                                _json.dumps(gps_outline), _json.dumps([]),
+                                "", "", "", "", "",
+                                "", _json.dumps([]), _json.dumps([]),
+                            ),
+                        )
+                        new_track_id = cur.lastrowid
+                        await db.execute(
+                            "UPDATE sessions SET track_id = ? WHERE id = ?",
+                            (new_track_id, result["session_id"]),
+                        )
+                        await db.commit()
+                        auto_track_applied = {
+                            "track_id": int(new_track_id),
+                            "track_name": track_name,
+                            "created": True,
+                        }
+                    finally:
+                        await db.close()
+                except Exception:
+                    pass
     except Exception:
         pass
 
