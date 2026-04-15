@@ -31,6 +31,7 @@ export interface Lap {
   start_time_ms: number;
   end_time_ms: number;
   duration_ms: number;
+  split_times?: (number | null)[];
 }
 
 export interface Channel {
