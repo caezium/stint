@@ -546,6 +546,13 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
         {/* Unit settings */}
         <UnitSettings />
         <KeyboardHelp />
+        <a
+          href="/settings"
+          className="px-2 py-0.5 text-muted-foreground hover:text-foreground transition-colors"
+          title="Open settings"
+        >
+          ⚙ Settings
+        </a>
 
         <div className="w-px h-4 bg-border" />
 

@@ -8,6 +8,7 @@ from .database import init_db
 from .routers import (
     upload, sessions, channels, sectors, math_channels, layouts, profiles,
     export, compare, tracks, math_defaults, log_sheets, collections, reports, settings,
+    admin,
 )
 
 
@@ -41,6 +42,7 @@ app.include_router(log_sheets.router, prefix="/api")
 app.include_router(collections.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 
 @app.get("/api/health")
