@@ -195,6 +195,19 @@ export async function fetchDeltaT(
   return res.json();
 }
 
+export async function fetchCrossSessionDeltaT(
+  ref: { session_id: string; lap: number },
+  compare: { session_id: string; lap: number }
+): Promise<DeltaTData> {
+  const res = await fetch(`/api/compare/delta-t`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ref, compare }),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch cross-session delta-T: ${res.status}`);
+  return res.json();
+}
+
 // ---- Channel stats ----
 
 export interface ChannelStats {
