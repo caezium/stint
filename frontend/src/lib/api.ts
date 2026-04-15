@@ -448,6 +448,32 @@ export async function createTrack(track: Omit<Track, "id">): Promise<{ id: numbe
   return res.json();
 }
 
+export async function matchTrack(
+  gpsOutline: number[][],
+  lengthM?: number
+): Promise<{ match: { id: number; name: string; distance_m: number; score: number } | null; threshold_m: number; matched: boolean }> {
+  const res = await fetch("/api/tracks/match", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gps_outline: gpsOutline, length_m: lengthM }),
+  });
+  if (!res.ok) throw new Error(`Failed to match track: ${res.status}`);
+  return res.json();
+}
+
+export interface LapDiagnostic {
+  num: number;
+  start_time_ms_libxrk: number;
+  first_sample_timecode_ms: number;
+  diff_ms: number;
+}
+
+export async function fetchLapDiagnostics(sessionId: string): Promise<LapDiagnostic[]> {
+  const res = await fetch(`/api/sessions/${sessionId}/laps/diagnostics`);
+  if (!res.ok) throw new Error(`Failed to fetch lap diagnostics: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteTrack(id: number): Promise<void> {
   const res = await fetch(`/api/tracks/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to delete track: ${res.status}`);

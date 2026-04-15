@@ -9,6 +9,8 @@ import {
   fetchDrivers,
   fetchVehicles,
   assignSession,
+  fetchLapDiagnostics,
+  type LapDiagnostic,
   type SessionDetail,
   type TrackData,
   type Driver,
@@ -36,6 +38,8 @@ export default function SessionDetailPage() {
   const [track, setTrack] = useState<TrackData | null>(null);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [diagnostics, setDiagnostics] = useState<LapDiagnostic[] | null>(null);
+  const [showDiag, setShowDiag] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -249,6 +253,55 @@ export default function SessionDetailPage() {
               </Table>
             </CardContent>
           </Card>
+
+          {/* Lap-start diagnostics */}
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={async () => {
+                setShowDiag((v) => !v);
+                if (!diagnostics) {
+                  try {
+                    setDiagnostics(await fetchLapDiagnostics(id));
+                  } catch {
+                    setDiagnostics([]);
+                  }
+                }
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              {showDiag ? "Hide" : "Show"} lap-start diagnostics
+            </button>
+            {showDiag && diagnostics && (
+              <Card className="mt-2">
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-20">Lap</TableHead>
+                        <TableHead>libxrk start (ms)</TableHead>
+                        <TableHead>first sample (ms)</TableHead>
+                        <TableHead>diff (ms)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {diagnostics.map((d) => (
+                        <TableRow
+                          key={d.num}
+                          className={Math.abs(d.diff_ms) > 50 ? "text-amber-400" : ""}
+                        >
+                          <TableCell className="font-mono text-sm">{d.num}</TableCell>
+                          <TableCell className="font-mono text-sm">{d.start_time_ms_libxrk}</TableCell>
+                          <TableCell className="font-mono text-sm">{d.first_sample_timecode_ms}</TableCell>
+                          <TableCell className="font-mono text-sm">{d.diff_ms}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </div>
 
         {/* Sidebar: Track map + Channels */}
