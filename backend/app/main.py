@@ -1,4 +1,4 @@
-"""FastAPI application for KartLab racing telemetry."""
+"""FastAPI application for Stint racing telemetry."""
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="KartLab", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Stint", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,4 +35,4 @@ app.include_router(export.router, prefix="/api")
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "kartlab"}
+    return {"status": "ok", "service": "stint"}

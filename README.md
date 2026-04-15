@@ -1,6 +1,6 @@
-# KartLab
+# Stint
 
-KartLab is a two-service telemetry analysis app for AiM `.xrk` and `.xrz` files.
+Stint is a two-service telemetry analysis app for AiM `.xrk` and `.xrz` files.
 
 - `backend/`: FastAPI service that parses uploads with `libxrk`, stores metadata in SQLite, and caches channel data as Arrow IPC files.
 - `frontend/`: Next.js app for browsing sessions, viewing lap summaries, and comparing telemetry overlays.
