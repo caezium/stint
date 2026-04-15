@@ -660,11 +660,58 @@ export async function createVehicle(
   return res.json();
 }
 
-// ---- Collections ----
+// ---- Collections (venue/date tree — legacy) ----
 
 export async function fetchCollections(): Promise<Record<string, Record<string, Session[]>>> {
   const res = await fetch("/api/sessions/collections");
   if (!res.ok) throw new Error(`Failed to fetch collections: ${res.status}`);
+  return res.json();
+}
+
+// ---- Smart Collections ----
+
+export interface SmartCollectionQuery {
+  driver_id?: number | null;
+  vehicle_id?: number | null;
+  track_id?: number | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  min_laps?: number | null;
+}
+
+export interface SmartCollection {
+  id: number;
+  name: string;
+  query: SmartCollectionQuery;
+  created_at: string;
+}
+
+export async function fetchSmartCollections(): Promise<SmartCollection[]> {
+  const res = await fetch("/api/collections");
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createSmartCollection(
+  name: string, query: SmartCollectionQuery,
+): Promise<{ id: number }> {
+  const res = await fetch("/api/collections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, query }),
+  });
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteSmartCollection(id: number): Promise<void> {
+  const res = await fetch(`/api/collections/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+}
+
+export async function fetchSmartCollectionSessions(id: number): Promise<Session[]> {
+  const res = await fetch(`/api/collections/${id}/sessions`);
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
   return res.json();
 }
 
