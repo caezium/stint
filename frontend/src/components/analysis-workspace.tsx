@@ -8,6 +8,10 @@ import { useCursorStore } from "@/stores/cursor-store";
 import { fetchTrack, fetchTrackOverlay, type TrackData, type TrackOverlayData } from "@/lib/api";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
+import { HistogramChart } from "@/components/charts/histogram-chart";
+import { ScatterChart } from "@/components/charts/scatter-chart";
+import { LapTimeChart } from "@/components/charts/lap-time-chart";
+import { FFTChart } from "@/components/charts/fft-chart";
 import { LapSelector } from "@/components/lap-selector";
 import { ChannelBrowser } from "@/components/channel-browser";
 import { TrackMap, type LapTrace } from "@/components/track-map";
@@ -822,29 +826,13 @@ function HistogramWrapper({
     );
   }, [sessionId, channelName, refLap]);
 
-  // Lazy load
-  const [HistogramChart, setHistogramChart] = useState<React.ComponentType<{
-    data: number[];
-    label?: string;
-    bins?: number;
-    height?: number;
-  }> | null>(null);
-
-  useEffect(() => {
-    import("@/components/charts/histogram-chart").then((mod) =>
-      setHistogramChart(() => mod.HistogramChart)
-    );
-  }, []);
-
-  if (!HistogramChart) return null;
-
   return (
-    <div>
+    <div style={{ height }}>
       {values.length > 0 ? (
         <HistogramChart
           data={values}
-          label={channelName}
-          height={height}
+          channelName={channelName}
+          units=""
         />
       ) : (
         <div
@@ -870,57 +858,17 @@ function ScatterWrapper({
   height: number;
 }) {
   const { refLap } = useLapStore();
-  const [xVals, setXVals] = useState<number[]>([]);
-  const [yVals, setYVals] = useState<number[]>([]);
   const xCh = channels[0] || "GPS Speed";
   const yCh = channels[1] || "GPS_LateralAcc";
 
-  useEffect(() => {
-    if (!refLap) return;
-    import("@/lib/api").then(({ fetchResampledData }) =>
-      fetchResampledData(sessionId, [xCh, yCh], refLap.num)
-        .then((d) => {
-          setXVals(Array.from(d.channels[xCh] ?? []));
-          setYVals(Array.from(d.channels[yCh] ?? []));
-        })
-        .catch(() => {
-          setXVals([]);
-          setYVals([]);
-        })
-    );
-  }, [sessionId, xCh, yCh, refLap]);
-
-  const [ScatterChart, setScatterChart] = useState<React.ComponentType<{
-    xData: number[];
-    yData: number[];
-    xLabel?: string;
-    yLabel?: string;
-    width?: number;
-    height?: number;
-  }> | null>(null);
-
-  useEffect(() => {
-    import("@/components/charts/scatter-chart").then((mod) =>
-      setScatterChart(() => mod.ScatterChart)
-    );
-  }, []);
-
-  if (!ScatterChart) return null;
-
-  return xVals.length > 0 ? (
-    <ScatterChart
-      xData={xVals}
-      yData={yVals}
-      xLabel={xCh}
-      yLabel={yCh}
-      height={height}
-    />
-  ) : (
-    <div
-      className="flex items-center justify-center bg-[#0c0c0c] rounded-lg text-muted-foreground text-sm"
-      style={{ height }}
-    >
-      {refLap ? "Loading scatter data..." : "Select a lap"}
+  return (
+    <div style={{ height }}>
+      <ScatterChart
+        xChannel={xCh}
+        yChannel={yCh}
+        sessionId={sessionId}
+        lap={refLap?.num}
+      />
     </div>
   );
 }
@@ -935,28 +883,17 @@ function LaptimeWrapper({
   const session = useSessionStore((s) => s.session);
   const { refLap } = useLapStore();
 
-  const [LapTimeChart, setLapTimeChart] = useState<React.ComponentType<{
-    laps: { num: number; duration_ms: number }[];
-    refLapNum?: number;
-    height?: number;
-  }> | null>(null);
-
-  useEffect(() => {
-    import("@/components/charts/lap-time-chart").then((mod) =>
-      setLapTimeChart(() => mod.LapTimeChart)
-    );
-  }, []);
-
-  if (!LapTimeChart || !session) return null;
+  if (!session) return null;
 
   const laps = session.laps.filter((l) => l.num > 0 && l.duration_ms > 0);
 
   return (
-    <LapTimeChart
-      laps={laps}
-      refLapNum={refLap?.num}
-      height={height}
-    />
+    <div style={{ height }}>
+      <LapTimeChart
+        laps={laps}
+        refLapNum={refLap?.num ?? null}
+      />
+    </div>
   );
 }
 
@@ -979,20 +916,6 @@ function FFTWrapper({
   sessionId: string;
   height: number;
 }) {
-  const [FFTChart, setFFTChart] = useState<React.ComponentType<{
-    sessionId: string;
-    channels: string[];
-    height?: number;
-  }> | null>(null);
-
-  useEffect(() => {
-    import("@/components/charts/fft-chart").then((mod) =>
-      setFFTChart(() => mod.FFTChart)
-    );
-  }, []);
-
-  if (!FFTChart) return null;
-
   return (
     <FFTChart
       sessionId={sessionId}

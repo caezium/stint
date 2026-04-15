@@ -279,7 +279,7 @@ export function TelemetryChart({
     }
 
     const series: uPlot.Series[] = [
-      {}, // x-axis placeholder
+      { label: useDistance ? "d" : "t" }, // x-axis
       ...lapSeries.map((s) => ({
         label: s.label,
         stroke: s.stroke,
@@ -374,7 +374,7 @@ export function TelemetryChart({
         height: options?.height ?? height,
       } as uPlot.Options;
 
-      chartRef.current = new UPlot(opts, data, containerRef.current);
+      chartRef.current = new UPlot(opts, data ?? undefined, containerRef.current);
     }
 
     init();
