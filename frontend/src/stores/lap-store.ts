@@ -10,11 +10,14 @@ export interface CrossSessionLap {
 interface LapStore {
   refLap: Lap | null;
   altLap: Lap | null;
+  /** When altLap comes from a different session (cross-session compare),
+   *  this holds that session's id. Null means "same session as ref". */
+  altSessionId: string | null;
   extraLaps: Lap[];
   /** Laps pinned from OTHER sessions for cross-session comparison. */
   crossSessionLaps: CrossSessionLap[];
   setRefLap: (lap: Lap) => void;
-  setAltLap: (lap: Lap | null) => void;
+  setAltLap: (lap: Lap | null, sessionId?: string | null) => void;
   toggleExtraLap: (lap: Lap) => void;
   addCrossSessionLap: (entry: CrossSessionLap) => void;
   removeCrossSessionLap: (sessionId: string, lapNum: number) => void;
@@ -25,10 +28,11 @@ interface LapStore {
 export const useLapStore = create<LapStore>((set) => ({
   refLap: null,
   altLap: null,
+  altSessionId: null,
   extraLaps: [],
   crossSessionLaps: [],
   setRefLap: (lap) => set({ refLap: lap }),
-  setAltLap: (lap) => set({ altLap: lap }),
+  setAltLap: (lap, sessionId = null) => set({ altLap: lap, altSessionId: sessionId }),
   toggleExtraLap: (lap) =>
     set((state) => {
       const exists = state.extraLaps.some((l) => l.num === lap.num);
@@ -58,8 +62,8 @@ export const useLapStore = create<LapStore>((set) => ({
     const best = valid.reduce((a, b) =>
       a.duration_ms < b.duration_ms ? a : b
     );
-    set({ refLap: best, altLap: null, extraLaps: [] });
+    set({ refLap: best, altLap: null, altSessionId: null, extraLaps: [] });
   },
   reset: () =>
-    set({ refLap: null, altLap: null, extraLaps: [], crossSessionLaps: [] }),
+    set({ refLap: null, altLap: null, altSessionId: null, extraLaps: [], crossSessionLaps: [] }),
 }));

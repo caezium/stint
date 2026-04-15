@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { fetchSessions, type Session } from "@/lib/api";
+import {
+  fetchSessions,
+  fetchDrivers,
+  fetchVehicles,
+  type Session,
+  type Driver,
+  type Vehicle,
+} from "@/lib/api";
 import { formatLapTime } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +18,11 @@ import { Button } from "@/components/ui/button";
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [search, setSearch] = useState("");
+  const [driverFilter, setDriverFilter] = useState<number | "">("");
+  const [vehicleFilter, setVehicleFilter] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,16 +31,20 @@ export default function SessionsPage() {
       .then(setSessions)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+    fetchDrivers().then(setDrivers).catch(() => setDrivers([]));
+    fetchVehicles().then(setVehicles).catch(() => setVehicles([]));
   }, []);
 
   const filtered = sessions.filter((s) => {
     const q = search.toLowerCase();
-    return (
+    const matchesSearch =
       s.venue.toLowerCase().includes(q) ||
       s.driver.toLowerCase().includes(q) ||
       s.file_name.toLowerCase().includes(q) ||
-      (s.vehicle && s.vehicle.toLowerCase().includes(q))
-    );
+      (s.vehicle && s.vehicle.toLowerCase().includes(q));
+    const matchesDriver = driverFilter === "" || s.driver_id === driverFilter;
+    const matchesVehicle = vehicleFilter === "" || s.vehicle_id === vehicleFilter;
+    return matchesSearch && matchesDriver && matchesVehicle;
   });
 
   return (
@@ -46,13 +61,33 @@ export default function SessionsPage() {
         </Link>
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap gap-2">
         <Input
           placeholder="Search by venue, driver, or file name..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-md"
         />
+        <select
+          value={driverFilter}
+          onChange={(e) => setDriverFilter(e.target.value === "" ? "" : Number(e.target.value))}
+          className="bg-muted rounded px-2 text-sm"
+        >
+          <option value="">All drivers</option>
+          {drivers.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+        <select
+          value={vehicleFilter}
+          onChange={(e) => setVehicleFilter(e.target.value === "" ? "" : Number(e.target.value))}
+          className="bg-muted rounded px-2 text-sm"
+        >
+          <option value="">All vehicles</option>
+          {vehicles.map((v) => (
+            <option key={v.id} value={v.id}>{v.name}</option>
+          ))}
+        </select>
       </div>
 
       {loading && (

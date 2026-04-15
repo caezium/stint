@@ -128,6 +128,13 @@ export function LapSelector() {
               </div>
             </div>
             <button
+              onClick={() => setAltLap(entry.lap, entry.sessionId)}
+              className="text-muted-foreground hover:text-foreground px-1"
+              title="Set as compare lap"
+            >
+              ↔
+            </button>
+            <button
               onClick={() =>
                 removeCrossSessionLap(entry.sessionId, entry.lap.num)
               }

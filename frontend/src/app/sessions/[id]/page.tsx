@@ -6,8 +6,13 @@ import Link from "next/link";
 import {
   fetchSession,
   fetchTrack,
+  fetchDrivers,
+  fetchVehicles,
+  assignSession,
   type SessionDetail,
   type TrackData,
+  type Driver,
+  type Vehicle,
 } from "@/lib/api";
 import { formatLapTime, CHANNEL_CATEGORIES } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,6 +34,8 @@ export default function SessionDetailPage() {
 
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [track, setTrack] = useState<TrackData | null>(null);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +47,15 @@ export default function SessionDetailPage() {
     ])
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+    fetchDrivers().then(setDrivers).catch(() => setDrivers([]));
+    fetchVehicles().then(setVehicles).catch(() => setVehicles([]));
   }, [id]);
+
+  async function handleAssign(field: "driver_id" | "vehicle_id", value: number | null) {
+    if (!session) return;
+    await assignSession(session.id, { [field]: value });
+    setSession({ ...session, [field]: value });
+  }
 
   if (loading) {
     return (
@@ -119,8 +134,40 @@ export default function SessionDetailPage() {
 
       {/* Metadata cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-        <MetaCard label="Driver" value={session.driver || "—"} />
-        <MetaCard label="Vehicle" value={session.vehicle || "—"} />
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground mb-1">Driver</p>
+            <select
+              value={session.driver_id ?? ""}
+              onChange={(e) =>
+                handleAssign("driver_id", e.target.value === "" ? null : Number(e.target.value))
+              }
+              className="w-full bg-muted rounded px-2 py-1 text-sm"
+            >
+              <option value="">{session.driver || "—"}</option>
+              {drivers.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground mb-1">Vehicle</p>
+            <select
+              value={session.vehicle_id ?? ""}
+              onChange={(e) =>
+                handleAssign("vehicle_id", e.target.value === "" ? null : Number(e.target.value))
+              }
+              className="w-full bg-muted rounded px-2 py-1 text-sm"
+            >
+              <option value="">{session.vehicle || "—"}</option>
+              {vehicles.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+          </CardContent>
+        </Card>
         <MetaCard label="Logger" value={session.logger_model || "—"} />
         <MetaCard
           label="Duration"
