@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useSessionStore } from "@/stores/session-store";
-import { CHANNEL_CATEGORIES } from "@/lib/constants";
+import { CHANNEL_CATEGORIES, DEFAULT_MATH_CHANNELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { Channel } from "@/lib/api";
 
@@ -10,6 +10,16 @@ interface ChannelBrowserProps {
   activeChannels: string[];
   onToggleChannel: (name: string) => void;
 }
+
+const DEFAULT_MATH_VIRTUAL: Channel[] = DEFAULT_MATH_CHANNELS.map((c) => ({
+  name: c.name,
+  units: c.units,
+  dec_pts: 3,
+  sample_count: 1,
+  interpolate: true,
+  function_name: "",
+  category: "Math (Default)",
+}));
 
 export function ChannelBrowser({
   activeChannels,
@@ -21,7 +31,12 @@ export function ChannelBrowser({
 
   const grouped = useMemo(() => {
     if (!session) return {};
-    return groupByCategory(session.channels);
+    const existingNames = new Set(session.channels.map((c) => c.name));
+    const merged = [
+      ...session.channels,
+      ...DEFAULT_MATH_VIRTUAL.filter((c) => !existingNames.has(c.name)),
+    ];
+    return groupByCategory(merged);
   }, [session]);
 
   const filtered = useMemo(() => {

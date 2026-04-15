@@ -1,4 +1,7 @@
 import { decodeArrowIPC, type ResampledData } from "./arrow-decode";
+import { DEFAULT_MATH_CHANNELS } from "./constants";
+
+const DEFAULT_MATH_NAMES = new Set(DEFAULT_MATH_CHANNELS.map((c) => c.name));
 
 // ---- Types ----
 
@@ -144,21 +147,95 @@ export async function fetchResampledData(
   lap: number,
   refChannel?: string
 ): Promise<ResampledData> {
-  const params = new URLSearchParams({
-    channels: channels.join(","),
-    lap: String(lap),
-  });
-  if (refChannel) params.set("ref_channel", refChannel);
+  // Split into real channels vs default-math virtual channels
+  const defaults = channels.filter((c) => DEFAULT_MATH_NAMES.has(c));
+  const real = channels.filter((c) => !DEFAULT_MATH_NAMES.has(c));
 
-  const res = await fetch(`/api/sessions/${sessionId}/resampled?${params}`);
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch resampled data: ${res.status} ${await res.text().catch(() => "")}`
-    );
+  // Fetch both in parallel when we have defaults
+  const realPromise: Promise<ResampledData | null> = real.length > 0
+    ? (async () => {
+        const params = new URLSearchParams({
+          channels: real.join(","),
+          lap: String(lap),
+        });
+        if (refChannel) params.set("ref_channel", refChannel);
+        const res = await fetch(`/api/sessions/${sessionId}/resampled?${params}`);
+        if (!res.ok) {
+          throw new Error(
+            `Failed to fetch resampled data: ${res.status} ${await res.text().catch(() => "")}`
+          );
+        }
+        const buffer = await res.arrayBuffer();
+        return decodeArrowIPC(buffer);
+      })()
+    : Promise.resolve(null);
+
+  const mathPromise: Promise<Record<string, number[]> | null> = defaults.length > 0
+    ? fetchMathDefaults(sessionId, lap).catch(() => null)
+    : Promise.resolve(null);
+
+  const [realData, mathData] = await Promise.all([realPromise, mathPromise]);
+
+  if (realData && !mathData) return realData;
+
+  if (!realData && mathData) {
+    const tc = (mathData.timecodes ?? []) as number[];
+    const rowCount = tc.length;
+    const out: ResampledData = {
+      timecodes: Float64Array.from(tc),
+      channels: {},
+      rowCount,
+    };
+    for (const name of defaults) {
+      const arr = mathData[name];
+      if (Array.isArray(arr)) {
+        out.channels[name] = Float64Array.from(arr);
+      }
+    }
+    return out;
   }
 
-  const buffer = await res.arrayBuffer();
-  return decodeArrowIPC(buffer);
+  if (realData && mathData) {
+    // Merge math defaults into real data. Math defaults use lap-relative tc; real uses absolute.
+    // Interpolate math arrays onto real timecodes using lap-relative offset.
+    const realTc = realData.timecodes;
+    const n = realData.rowCount;
+    if (n === 0) return realData;
+    const startMs = realTc[0];
+    const mathTc = (mathData.timecodes ?? []) as number[];
+    const merged: ResampledData = {
+      timecodes: realTc,
+      channels: { ...realData.channels },
+      rowCount: n,
+    };
+    for (const name of defaults) {
+      const src = mathData[name];
+      if (!Array.isArray(src) || src.length === 0) continue;
+      const out = new Float64Array(n);
+      if (mathTc.length === src.length) {
+        // nearest-neighbor interpolation
+        let j = 0;
+        for (let i = 0; i < n; i++) {
+          const t = realTc[i] - startMs;
+          while (j < mathTc.length - 1 && Math.abs(mathTc[j + 1] - t) <= Math.abs(mathTc[j] - t)) {
+            j++;
+          }
+          out[i] = src[Math.min(j, src.length - 1)];
+        }
+      } else {
+        // Fallback: index-scale
+        for (let i = 0; i < n; i++) {
+          const idx = Math.min(src.length - 1, Math.floor((i / Math.max(1, n - 1)) * (src.length - 1)));
+          out[i] = src[idx];
+        }
+      }
+      merged.channels[name] = out;
+    }
+    return merged;
+  }
+
+  // No channels at all
+  return { timecodes: new Float64Array(), channels: {}, rowCount: 0 };
 }
 
 // ---- Distance data ----
@@ -585,11 +662,30 @@ export async function saveSetting(key: string, value: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed: ${res.status}`);
 }
 
+const _mathDefaultsCache = new Map<string, Promise<Record<string, number[]>>>();
+
 export async function fetchMathDefaults(
   sessionId: string, lap: number, channel?: string,
 ): Promise<Record<string, number[]>> {
+  // Only cache full-response (no channel filter) keyed by sessionId:lap.
+  if (!channel) {
+    const key = `${sessionId}:${lap}`;
+    const cached = _mathDefaultsCache.get(key);
+    if (cached) return cached;
+    const p = (async () => {
+      const qs = new URLSearchParams({ lap: String(lap) });
+      const res = await fetch(`/api/sessions/${sessionId}/math-defaults?${qs}`);
+      if (!res.ok) throw new Error(`Failed to fetch math defaults: ${res.status}`);
+      return res.json();
+    })().catch((e) => {
+      _mathDefaultsCache.delete(key);
+      throw e;
+    });
+    _mathDefaultsCache.set(key, p);
+    return p;
+  }
   const qs = new URLSearchParams({ lap: String(lap) });
-  if (channel) qs.set("channel", channel);
+  qs.set("channel", channel);
   const res = await fetch(`/api/sessions/${sessionId}/math-defaults?${qs}`);
   if (!res.ok) throw new Error(`Failed to fetch math defaults: ${res.status}`);
   return res.json();
