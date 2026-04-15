@@ -471,7 +471,8 @@ export interface LapDiagnostic {
 export async function fetchLapDiagnostics(sessionId: string): Promise<LapDiagnostic[]> {
   const res = await fetch(`/api/sessions/${sessionId}/laps/diagnostics`);
   if (!res.ok) throw new Error(`Failed to fetch lap diagnostics: ${res.status}`);
-  return res.json();
+  const json = await res.json();
+  return Array.isArray(json) ? json : (json.laps ?? []);
 }
 
 export async function deleteTrack(id: number): Promise<void> {

@@ -25,7 +25,7 @@ export default function RootLayout({
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
             <Link href="/sessions" className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-md bg-red-500 flex items-center justify-center">
-                <span className="text-white text-xs font-bold">K</span>
+                <span className="text-white text-xs font-bold">S</span>
               </div>
               <span className="text-lg font-semibold tracking-tight">
                 Stint
