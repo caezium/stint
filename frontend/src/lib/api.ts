@@ -685,6 +685,12 @@ export async function fetchSetting(key: string): Promise<string> {
   return j.value ?? "";
 }
 
+export async function clearAllSessions(): Promise<{ ok: boolean; purged: string[] }> {
+  const res = await fetch(`/api/admin/sessions`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
+}
+
 export async function saveSetting(key: string, value: string): Promise<void> {
   const res = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
     method: "PUT",

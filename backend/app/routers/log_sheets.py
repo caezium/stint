@@ -6,6 +6,11 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -89,7 +94,10 @@ async def _get_session_metadata(session_id: str) -> dict | None:
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT id, log_date, log_time FROM sessions WHERE id = ?", (session_id,)
+            """SELECT s.id, s.log_date, s.log_time, t.timezone AS track_tz
+               FROM sessions s LEFT JOIN tracks t ON s.track_id = t.id
+               WHERE s.id = ?""",
+            (session_id,),
         )
         row = await cur.fetchone()
         if not row:
@@ -98,6 +106,7 @@ async def _get_session_metadata(session_id: str) -> dict | None:
             "id": row["id"],
             "log_date": row["log_date"] or "",
             "log_time": row["log_time"] or "",
+            "track_tz": (row["track_tz"] or "") if "track_tz" in row.keys() else "",
         }
     finally:
         await db.close()
@@ -125,10 +134,21 @@ def _get_session_latlon(session_id: str) -> tuple[float, float] | None:
         return None
 
 
-def _parse_session_datetime(log_date: str, log_time: str) -> int | None:
-    """Parse session date/time into a UNIX timestamp (UTC, best-effort)."""
+def _parse_session_datetime(log_date: str, log_time: str, track_tz: str = "") -> int | None:
+    """Parse session date/time into a UNIX timestamp.
+
+    The log timestamp is interpreted as local wall-clock time at the track.
+    If ``track_tz`` (an IANA zone name like "Europe/London") is provided and
+    resolvable, that zone is used; otherwise we fall back to UTC.
+    """
     if not log_date:
         return None
+    tz: timezone | "ZoneInfo" = timezone.utc
+    if track_tz and ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(track_tz)  # type: ignore[assignment]
+        except Exception:
+            tz = timezone.utc
     fmts = [
         ("%Y-%m-%d %H:%M:%S", f"{log_date} {log_time or '12:00:00'}"),
         ("%Y-%m-%d %H:%M", f"{log_date} {log_time or '12:00'}"),
@@ -136,7 +156,7 @@ def _parse_session_datetime(log_date: str, log_time: str) -> int | None:
     ]
     for fmt, s in fmts:
         try:
-            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(s, fmt).replace(tzinfo=tz)
             return int(dt.timestamp())
         except ValueError:
             continue
@@ -169,7 +189,7 @@ async def fetch_weather(session_id: str):
     if not latlon:
         raise HTTPException(400, "Session has no GPS data to locate weather")
 
-    dt = _parse_session_datetime(meta["log_date"], meta["log_time"])
+    dt = _parse_session_datetime(meta["log_date"], meta["log_time"], meta.get("track_tz", ""))
     if not dt:
         raise HTTPException(400, "Session has no log date; cannot fetch historical weather")
 
