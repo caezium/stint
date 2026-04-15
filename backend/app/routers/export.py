@@ -51,6 +51,107 @@ async def export_csv(
     )
 
 
+@router.get("/sessions/{session_id}/export/pdf")
+async def export_pdf(session_id: str, lap: Optional[int] = Query(None)):
+    """Generate a PDF summary report for a session (optionally focused on one lap)."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        session = await cursor.fetchone()
+        if not session:
+            raise HTTPException(404, "Session not found")
+        session_dict = dict(session)
+
+        cursor = await db.execute(
+            "SELECT num, duration_ms FROM laps WHERE session_id = ? AND num > 0 ORDER BY num",
+            (session_id,),
+        )
+        laps = [dict(row) for row in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"Stint report {session_id[:8]}")
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph(f"Stint session report", styles["Title"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            f"<b>Session:</b> {session_dict.get('file_name', session_id)}<br/>"
+            f"<b>Driver:</b> {session_dict.get('driver', '—')}<br/>"
+            f"<b>Vehicle:</b> {session_dict.get('vehicle', '—')}<br/>"
+            f"<b>Venue:</b> {session_dict.get('venue', '—')}<br/>"
+            f"<b>Date:</b> {session_dict.get('log_date', '—')} {session_dict.get('log_time', '')}",
+            styles["Normal"],
+        )
+    )
+    story.append(Spacer(1, 12))
+
+    if laps:
+        best = min(laps, key=lambda l: l["duration_ms"])
+        story.append(
+            Paragraph(
+                f"<b>Laps:</b> {len(laps)} &nbsp;&nbsp; <b>Best:</b> L{best['num']} "
+                f"at {best['duration_ms'] / 1000:.3f}s",
+                styles["Normal"],
+            )
+        )
+        story.append(Spacer(1, 6))
+
+        rows = [["Lap", "Duration (s)", "Delta to best (s)"]]
+        for lp in laps:
+            highlight = lp["num"] == best["num"]
+            rows.append(
+                [
+                    f"L{lp['num']}" + (" ★" if highlight else ""),
+                    f"{lp['duration_ms'] / 1000:.3f}",
+                    f"{(lp['duration_ms'] - best['duration_ms']) / 1000:+.3f}",
+                ]
+            )
+        tbl = Table(rows, hAlign="LEFT")
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#18181b")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ]
+            )
+        )
+        story.append(tbl)
+        story.append(Spacer(1, 12))
+
+    if lap is not None:
+        story.append(Paragraph(f"<b>Focused lap:</b> L{lap}", styles["Heading3"]))
+        story.append(
+            Paragraph(
+                "Channel statistics and telemetry summary for this lap are available "
+                "via the /api/sessions/{id}/stats endpoint.",
+                styles["Italic"],
+            )
+        )
+
+    doc.build(story)
+    buffer.seek(0)
+    safe_name = f"stint_{session_id[:8]}"
+    if lap is not None:
+        safe_name += f"_lap{lap}"
+    safe_name += ".pdf"
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
 @router.get("/sessions/{session_id}/export/report")
 async def export_report(session_id: str):
     """Generate a JSON summary report (lightweight alternative to PDF)."""

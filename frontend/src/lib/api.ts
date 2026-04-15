@@ -406,6 +406,11 @@ export function getExportCsvUrl(
   return `/api/sessions/${sessionId}/export/csv?${params}`;
 }
 
+export function getExportPdfUrl(sessionId: string, lap?: number): string {
+  const qs = lap != null ? `?lap=${lap}` : "";
+  return `/api/sessions/${sessionId}/export/pdf${qs}`;
+}
+
 export async function fetchReport(sessionId: string): Promise<Record<string, unknown>> {
   const res = await fetch(`/api/sessions/${sessionId}/export/report`);
   if (!res.ok) throw new Error(`Failed to fetch report: ${res.status}`);

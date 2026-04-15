@@ -36,7 +36,7 @@ import {
   convertAngular,
   ANGULAR_UNIT_LABEL,
 } from "@/stores/units-store";
-import { getExportCsvUrl } from "@/lib/api";
+import { getExportCsvUrl, getExportPdfUrl } from "@/lib/api";
 
 // ---- Chart config types ----
 
@@ -556,6 +556,14 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
           className="px-2 py-0.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
         >
           Export CSV
+        </button>
+
+        <button
+          onClick={() => window.open(getExportPdfUrl(sessionId, refLap?.num), "_blank")}
+          disabled={!refLap}
+          className="px-2 py-0.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
+        >
+          Export PDF
         </button>
 
         {/* Layout manager */}
