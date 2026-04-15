@@ -406,6 +406,38 @@ export function getExportCsvUrl(
   return `/api/sessions/${sessionId}/export/csv?${params}`;
 }
 
+// ---- Tracks ----
+
+export interface Track {
+  id: number;
+  name: string;
+  country: string;
+  length_m: number;
+  gps_outline: number[][];
+  sector_defs: Record<string, unknown>[];
+}
+
+export async function fetchTracks(): Promise<Track[]> {
+  const res = await fetch("/api/tracks");
+  if (!res.ok) throw new Error(`Failed to fetch tracks: ${res.status}`);
+  return res.json();
+}
+
+export async function createTrack(track: Omit<Track, "id">): Promise<{ id: number }> {
+  const res = await fetch("/api/tracks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(track),
+  });
+  if (!res.ok) throw new Error(`Failed to create track: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteTrack(id: number): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete track: ${res.status}`);
+}
+
 export function getExportPdfUrl(sessionId: string, lap?: number): string {
   const qs = lap != null ? `?lap=${lap}` : "";
   return `/api/sessions/${sessionId}/export/pdf${qs}`;
