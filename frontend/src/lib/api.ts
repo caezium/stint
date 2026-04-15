@@ -550,6 +550,22 @@ export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void
   if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
 }
 
+export async function fetchSetting(key: string): Promise<string> {
+  const res = await fetch(`/api/settings/${encodeURIComponent(key)}`);
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  const j = await res.json();
+  return j.value ?? "";
+}
+
+export async function saveSetting(key: string, value: string): Promise<void> {
+  const res = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+}
+
 export async function fetchMathDefaults(
   sessionId: string, lap: number, channel?: string,
 ): Promise<Record<string, number[]>> {

@@ -100,6 +100,30 @@ async def upload_file(file: UploadFile):
     except Exception as e:
         raise HTTPException(500, f"Failed to parse file: {str(e)}")
 
+    # Apply session naming template if configured
+    try:
+        from .settings import get_setting_value
+        tmpl = await get_setting_value("session_naming_template", "")
+        if tmpl:
+            tokens = {
+                "{driver}": result.get("driver", ""),
+                "{vehicle}": result.get("vehicle", ""),
+                "{track}": result.get("venue", ""),
+                "{date}": result.get("log_date", ""),
+                "{time}": result.get("log_time", ""),
+            }
+            rendered = tmpl
+            ok = True
+            for k, v in tokens.items():
+                if k in rendered and not v:
+                    ok = False
+                    break
+                rendered = rendered.replace(k, v)
+            if ok and rendered.strip():
+                result["session_name"] = rendered
+    except Exception:
+        pass
+
     # Insert into database
     db = await get_db()
     try:
