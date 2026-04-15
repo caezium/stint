@@ -5,7 +5,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSessionStore } from "@/stores/session-store";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchTrack, fetchTrackOverlay, type TrackData, type TrackOverlayData } from "@/lib/api";
+import { fetchTrack, fetchTrackOverlay, fetchMathDefaults, type TrackData, type TrackOverlayData } from "@/lib/api";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
 import { HistogramChart } from "@/components/charts/histogram-chart";
@@ -126,6 +126,12 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     fetchTrack(sessionId).then(setTrack).catch(() => null);
   }, [sessionId]);
+
+  // Prewarm default math channels cache for the current ref lap
+  useEffect(() => {
+    if (!refLap) return;
+    fetchMathDefaults(sessionId, refLap.num).catch(() => null);
+  }, [sessionId, refLap]);
 
   // Fetch per-lap tracks for all active laps (including cross-session)
   interface ActiveLapSource {
