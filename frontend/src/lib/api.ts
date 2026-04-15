@@ -74,7 +74,7 @@ export async function fetchSessions(): Promise<Session[]> {
 }
 
 export async function fetchSession(id: number | string): Promise<SessionDetail> {
-  const res = await fetch(`/api/sessions/${id}`);
+  const res = await fetch(`/api/sessions/${id}?_t=${Date.now()}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to fetch session ${id}: ${res.status}`);
   return res.json();
 }
