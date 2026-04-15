@@ -128,7 +128,7 @@ export function DeltaChart({ sessionId, height = 200 }: DeltaChartProps) {
         },
       ],
       series: [
-        {},
+        { label: xAxisMode === "distance" ? "d" : "t" },
         {
           label: `Δt (L${altLap?.num} vs L${refLap?.num})`,
           stroke: "#f97316",
@@ -210,7 +210,7 @@ export function DeltaChart({ sessionId, height = 200 }: DeltaChartProps) {
 
       chartRef.current = new uPlotModule.current(
         { ...options, width: containerRef.current.clientWidth } as uPlot.Options,
-        data,
+        data ?? undefined,
         containerRef.current
       );
     }
