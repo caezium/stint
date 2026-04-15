@@ -648,6 +648,9 @@ export interface MultiSessionReportRow {
   lap_count: number;
   best_lap_ms: number | null;
   avg_lap_ms: number | null;
+  median_lap_ms?: number | null;
+  stddev_lap_ms?: number | null;
+  theoretical_best_ms?: number | null;
   counted_laps: number;
 }
 
