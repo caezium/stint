@@ -14,7 +14,7 @@ export const useUnitsStore = create<UnitsStore>()(
       speedUnit: "kmh",
       setSpeedUnit: (u) => set({ speedUnit: u }),
     }),
-    { name: "kartlab-units" }
+    { name: "stint-units" }
   )
 );
 

@@ -42,7 +42,7 @@ async def export_csv(
         writer.writerow([arrays[name][i] for name in col_names])
 
     output.seek(0)
-    safe_name = f"kartlab_{session_id[:8]}_lap{lap}.csv"
+    safe_name = f"stint_{session_id[:8]}_lap{lap}.csv"
 
     return StreamingResponse(
         iter([output.getvalue()]),

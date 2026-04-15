@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "KartLab",
+  title: "Stint",
   description: "Kart data analysis platform",
 };
 
@@ -28,7 +28,7 @@ export default function RootLayout({
                 <span className="text-white text-xs font-bold">K</span>
               </div>
               <span className="text-lg font-semibold tracking-tight">
-                KartLab
+                Stint
               </span>
             </Link>
             <nav className="flex items-center gap-6 text-sm">

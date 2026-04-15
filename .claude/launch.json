@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "kartlab",
+      "name": "stint",
       "runtimeExecutable": "docker",
       "runtimeArgs": ["compose", "up"],
       "port": 3000

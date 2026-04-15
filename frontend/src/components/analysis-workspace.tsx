@@ -75,7 +75,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   const [charts, setCharts] = useState<ChartConfig[]>(() => {
     if (typeof window === "undefined") return defaultCharts();
     try {
-      const saved = localStorage.getItem(`kartlab-charts-${sessionId}`);
+      const saved = localStorage.getItem(`stint-charts-${sessionId}`);
       if (saved) return JSON.parse(saved);
     } catch {}
     return defaultCharts();
@@ -84,21 +84,21 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   // Persist charts to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(`kartlab-charts-${sessionId}`, JSON.stringify(charts));
+      localStorage.setItem(`stint-charts-${sessionId}`, JSON.stringify(charts));
     } catch {}
   }, [charts, sessionId]);
 
   // Persist x-axis mode
   useEffect(() => {
     try {
-      localStorage.setItem("kartlab-xaxis-mode", xAxisMode);
+      localStorage.setItem("stint-xaxis-mode", xAxisMode);
     } catch {}
   }, [xAxisMode]);
 
   // Restore x-axis mode on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("kartlab-xaxis-mode");
+      const saved = localStorage.getItem("stint-xaxis-mode");
       if (saved === "time" || saved === "distance") setXAxisMode(saved);
     } catch {}
   }, []);

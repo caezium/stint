@@ -2,7 +2,7 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: kartlab-backend
+    container_name: stint-backend
     ports:
       - "8001:8001"
     volumes:
@@ -13,7 +13,7 @@ services:
   frontend:
     build:
       context: ./frontend
-    container_name: kartlab-frontend
+    container_name: stint-frontend
     command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
     ports:
       - "3000:3000"

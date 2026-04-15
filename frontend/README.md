@@ -1,6 +1,6 @@
 # Frontend
 
-Next.js frontend for KartLab.
+Next.js frontend for Stint.
 
 ## Commands
 
