@@ -126,8 +126,21 @@ async def get_db() -> aiosqlite.Connection:
     return db
 
 
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Apply additive migrations. Idempotent; safe to run at every startup."""
+    cur = await db.execute("PRAGMA table_info(sessions)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "driver_id" not in cols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN driver_id INTEGER REFERENCES drivers(id)")
+    if "vehicle_id" not in cols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN vehicle_id INTEGER REFERENCES vehicles(id)")
+    if "track_id" not in cols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN track_id INTEGER REFERENCES tracks(id)")
+
+
 async def init_db():
     db = await get_db()
     await db.executescript(SCHEMA)
+    await _migrate(db)
     await db.commit()
     await db.close()

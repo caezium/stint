@@ -18,6 +18,9 @@ export interface Session {
   best_lap_time_ms: number | null;
   total_duration_ms: number | null;
   created_at: string;
+  driver_id?: number | null;
+  vehicle_id?: number | null;
+  track_id?: number | null;
 }
 
 export interface Lap {
@@ -404,6 +407,18 @@ export function getExportCsvUrl(
     lap: String(lap),
   });
   return `/api/sessions/${sessionId}/export/csv?${params}`;
+}
+
+export async function assignSession(
+  sessionId: string,
+  assignment: { driver_id?: number | null; vehicle_id?: number | null; track_id?: number | null }
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/assign`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(assignment),
+  });
+  if (!res.ok) throw new Error(`Failed to assign session: ${res.status}`);
 }
 
 // ---- Tracks ----

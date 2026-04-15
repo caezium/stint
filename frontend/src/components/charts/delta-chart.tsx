@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchDeltaT, fetchDistance, type DeltaTData, type DistanceData } from "@/lib/api";
+import {
+  fetchDeltaT,
+  fetchDistance,
+  fetchCrossSessionDeltaT,
+  type DeltaTData,
+  type DistanceData,
+} from "@/lib/api";
 import type uPlot from "uplot";
 
 interface DeltaChartProps {
@@ -18,7 +24,7 @@ export function DeltaChart({ sessionId, height = 200 }: DeltaChartProps) {
   const chartRef = useRef<uPlot | null>(null);
   const uPlotModule = useRef<typeof uPlot | null>(null);
 
-  const { refLap, altLap } = useLapStore();
+  const { refLap, altLap, altSessionId } = useLapStore();
   const zoomRange = useCursorStore((s) => s.zoomRange);
   const xAxisMode = useCursorStore((s) => s.xAxisMode);
   const setCursorMs = useCursorStore((s) => s.setCursorMs);
@@ -34,10 +40,16 @@ export function DeltaChart({ sessionId, height = 200 }: DeltaChartProps) {
     let cancelled = false;
     setLoading(true);
 
-    fetchDeltaT(sessionId, refLap.num, altLap.num)
-      .then((d) => {
-        if (!cancelled) setDeltaData(d);
-      })
+    const isCrossSession = altSessionId != null && altSessionId !== sessionId;
+    const p = isCrossSession
+      ? fetchCrossSessionDeltaT(
+          { session_id: sessionId, lap: refLap.num },
+          { session_id: altSessionId!, lap: altLap.num },
+        )
+      : fetchDeltaT(sessionId, refLap.num, altLap.num);
+    p.then((d) => {
+      if (!cancelled) setDeltaData(d);
+    })
       .catch(() => {
         if (!cancelled) setDeltaData(null);
       })
@@ -46,7 +58,7 @@ export function DeltaChart({ sessionId, height = 200 }: DeltaChartProps) {
       });
 
     return () => { cancelled = true; };
-  }, [sessionId, refLap, altLap]);
+  }, [sessionId, refLap, altLap, altSessionId]);
 
   // Fetch ref lap distance mapping (to convert distance→time when in time mode)
   useEffect(() => {

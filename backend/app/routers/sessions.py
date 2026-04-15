@@ -12,6 +12,8 @@ router = APIRouter()
 async def list_sessions(
     driver: Optional[str] = None,
     venue: Optional[str] = None,
+    driver_id: Optional[int] = None,
+    vehicle_id: Optional[int] = None,
     search: Optional[str] = None,
     sort: str = Query(default="date_desc"),
 ):
@@ -26,6 +28,12 @@ async def list_sessions(
         if venue:
             query += " AND venue = ?"
             params.append(venue)
+        if driver_id is not None:
+            query += " AND driver_id = ?"
+            params.append(driver_id)
+        if vehicle_id is not None:
+            query += " AND vehicle_id = ?"
+            params.append(vehicle_id)
         if search:
             query += " AND (driver LIKE ? OR venue LIKE ? OR vehicle LIKE ? OR file_name LIKE ?)"
             params.extend([f"%{search}%"] * 4)
@@ -84,6 +92,31 @@ async def get_filter_options():
         venues = [row[0] async for row in venues_cursor]
 
         return {"drivers": drivers, "venues": venues}
+    finally:
+        await db.close()
+
+
+class AssignRequest(BaseModel):
+    driver_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    track_id: Optional[int] = None
+
+
+@router.put("/sessions/{session_id}/assign")
+async def assign_session(session_id: str, req: AssignRequest):
+    """Attach driver / vehicle / track FKs to a session. Pass null to clear."""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
+        if not await cursor.fetchone():
+            raise HTTPException(404, "Session not found")
+        await db.execute(
+            "UPDATE sessions SET driver_id = ?, vehicle_id = ?, track_id = ? WHERE id = ?",
+            (req.driver_id, req.vehicle_id, req.track_id, session_id),
+        )
+        await db.commit()
+        return {"session_id": session_id, "driver_id": req.driver_id,
+                "vehicle_id": req.vehicle_id, "track_id": req.track_id}
     finally:
         await db.close()
 
