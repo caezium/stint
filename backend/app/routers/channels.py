@@ -283,6 +283,97 @@ async def get_distance_channel(
     }
 
 
+class StartFinishLine(BaseModel):
+    lat1: float
+    lon1: float
+    lat2: float
+    lon2: float
+
+
+def _segments_cross(p1, p2, p3, p4):
+    """True if segment p1-p2 crosses segment p3-p4 (in local meters)."""
+    def ccw(a, b, c):
+        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+
+
+@router.post("/sessions/{session_id}/laps/recompute")
+async def recompute_laps(session_id: str, line: StartFinishLine):
+    """Recompute laps from GPS trajectory crossings of a user-defined start/finish line."""
+    lat_path = _find_arrow_file(session_id, "GPS Latitude") or _find_arrow_file(session_id, "GPS_Latitude")
+    lon_path = _find_arrow_file(session_id, "GPS Longitude") or _find_arrow_file(session_id, "GPS_Longitude")
+    if not lat_path or not lon_path:
+        raise HTTPException(404, "No GPS data for this session")
+
+    lat_table = ipc.open_file(lat_path).read_all()
+    lon_table = ipc.open_file(lon_path).read_all()
+    lat = lat_table.column(1).to_pylist()
+    lon = lon_table.column(1).to_pylist()
+    tc = lat_table.column("timecodes").to_pylist()
+    n = min(len(lat), len(lon), len(tc))
+    if n < 2:
+        raise HTTPException(400, "Not enough GPS samples")
+
+    # Project to local meters around the line midpoint
+    mlat = (line.lat1 + line.lat2) / 2
+    mpd_lat = 111320.0
+    mpd_lon = 111320.0 * max(0.01, math.cos(math.radians(mlat)))
+
+    def to_xy(la, lo):
+        return ((la - mlat) * mpd_lat, (lo - line.lon1) * mpd_lon)
+
+    line_a = to_xy(line.lat1, line.lon1)
+    line_b = to_xy(line.lat2, line.lon2)
+
+    # Find every sample pair where trajectory crosses the line
+    crossings: list[int] = []
+    prev = to_xy(lat[0], lon[0])
+    for i in range(1, n):
+        cur = to_xy(lat[i], lon[i])
+        if _segments_cross(prev, cur, line_a, line_b):
+            crossings.append(tc[i])
+        prev = cur
+
+    if len(crossings) < 2:
+        raise HTTPException(400, f"Only {len(crossings)} crossings found — check start/finish line placement")
+
+    # Build laps: lap 0 = from start of data to first crossing; lap N = between crossings
+    laps: list[dict] = []
+    laps.append({
+        "num": 0,
+        "start_time_ms": tc[0],
+        "end_time_ms": crossings[0],
+        "duration_ms": crossings[0] - tc[0],
+    })
+    for i in range(len(crossings) - 1):
+        laps.append({
+            "num": i + 1,
+            "start_time_ms": crossings[i],
+            "end_time_ms": crossings[i + 1],
+            "duration_ms": crossings[i + 1] - crossings[i],
+        })
+
+    # Persist
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM laps WHERE session_id = ?", (session_id,))
+        await db.executemany(
+            "INSERT INTO laps (session_id, num, start_time_ms, end_time_ms, duration_ms) VALUES (?,?,?,?,?)",
+            [(session_id, l["num"], l["start_time_ms"], l["end_time_ms"], l["duration_ms"]) for l in laps],
+        )
+        racing = [l for l in laps if l["num"] > 0 and l["duration_ms"] > 0]
+        best = min((l["duration_ms"] for l in racing), default=0)
+        await db.execute(
+            "UPDATE sessions SET lap_count = ?, best_lap_time_ms = ? WHERE id = ?",
+            (len(laps), best, session_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    return {"laps": laps, "crossings": len(crossings), "best_lap_time_ms": best}
+
+
 @router.get("/sessions/{session_id}/laps/diagnostics")
 async def laps_diagnostics(session_id: str):
     """

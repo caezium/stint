@@ -8,14 +8,18 @@ import {
   fetchTrack,
   fetchDrivers,
   fetchVehicles,
+  fetchTracks,
   assignSession,
   fetchLapDiagnostics,
+  recomputeFromTrack,
   type LapDiagnostic,
   type SessionDetail,
   type TrackData,
   type Driver,
   type Vehicle,
+  type Track,
 } from "@/lib/api";
+import { LogSheetPanel } from "@/components/log-sheet-panel";
 import { formatLapTime, CHANNEL_CATEGORIES } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +33,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { TrackMap } from "@/components/track-map";
+import { StartFinishEditor } from "@/components/start-finish-editor";
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -40,6 +45,9 @@ export default function SessionDetailPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [diagnostics, setDiagnostics] = useState<LapDiagnostic[] | null>(null);
   const [showDiag, setShowDiag] = useState(false);
+  const [showSF, setShowSF] = useState(false);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +61,10 @@ export default function SessionDetailPage() {
       .finally(() => setLoading(false));
     fetchDrivers().then(setDrivers).catch(() => setDrivers([]));
     fetchVehicles().then(setVehicles).catch(() => setVehicles([]));
+    fetchTracks().then(setTracks).catch(() => setTracks([]));
   }, [id]);
+
+  const assignedTrack = tracks.find((t) => t.id === session?.track_id);
 
   async function handleAssign(field: "driver_id" | "vehicle_id", value: number | null) {
     if (!session) return;
@@ -183,7 +194,50 @@ export default function SessionDetailPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Track card */}
+      {assignedTrack && (
+        <Card className="mb-4">
+          <CardContent className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs text-muted-foreground">Track</p>
+              <p className="font-medium">{assignedTrack.name}</p>
+              {assignedTrack.sf_line && (
+                <p className="text-xs text-green-400">S/F line configured</p>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Link href={`/tracks/${assignedTrack.id}/edit`}>
+                <Button size="sm" variant="secondary">Edit track</Button>
+              </Link>
+              {assignedTrack.sf_line && (
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    setRecomputeMsg(null);
+                    try {
+                      const r = await recomputeFromTrack(id, assignedTrack.id);
+                      setRecomputeMsg(`Recomputed ${r.laps.length} laps`);
+                      const s = await fetchSession(id);
+                      setSession(s);
+                    } catch (e) {
+                      setRecomputeMsg(e instanceof Error ? e.message : "Failed");
+                    }
+                  }}
+                >
+                  Recompute from track
+                </Button>
+              )}
+            </div>
+          </CardContent>
+          {recomputeMsg && (
+            <div className="px-4 pb-3 text-xs text-muted-foreground">{recomputeMsg}</div>
+          )}
+        </Card>
+      )}
+
+      <LogSheetPanel sessionId={id} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
         {/* Lap times table */}
         <div className="lg:col-span-2">
           <Card>
@@ -317,6 +371,24 @@ export default function SessionDetailPage() {
                 width={340}
                 height={280}
               />
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowSF((v) => !v)}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {showSF ? "Hide" : "Set"} start/finish line
+                </button>
+                {showSF && (
+                  <div className="mt-2">
+                    <StartFinishEditor
+                      sessionId={id}
+                      track={track}
+                      onRecomputed={() => fetchSession(id).then(setSession)}
+                    />
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
 

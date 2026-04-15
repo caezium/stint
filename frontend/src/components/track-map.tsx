@@ -37,6 +37,8 @@ interface TrackMapProps {
   width?: number;
   height?: number;
   interactive?: boolean;
+  sfLine?: { lat1: number; lon1: number; lat2: number; lon2: number } | null;
+  splitLines?: { lat1: number; lon1: number; lat2: number; lon2: number }[];
 }
 
 interface CoordTransform {
@@ -136,6 +138,8 @@ export function TrackMap({
   width,
   height,
   interactive = false,
+  sfLine = null,
+  splitLines = [],
 }: TrackMapProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -267,6 +271,33 @@ export function TrackMap({
       ctx.globalAlpha = 1;
     }
 
+    // S/F line overlay
+    if (sfLine) {
+      const meanLat = (t.minLat + t.maxLat) / 2;
+      const cosLat = Math.cos((meanLat * Math.PI) / 180);
+      ctx.strokeStyle = "#ef4444";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(toX(sfLine.lon1 * cosLat), toY(sfLine.lat1));
+      ctx.lineTo(toX(sfLine.lon2 * cosLat), toY(sfLine.lat2));
+      ctx.stroke();
+    }
+    // Split lines
+    if (splitLines && splitLines.length > 0) {
+      const meanLat = (t.minLat + t.maxLat) / 2;
+      const cosLat = Math.cos((meanLat * Math.PI) / 180);
+      ctx.strokeStyle = "#22c55e";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 3]);
+      for (const s of splitLines) {
+        ctx.beginPath();
+        ctx.moveTo(toX(s.lon1 * cosLat), toY(s.lat1));
+        ctx.lineTo(toX(s.lon2 * cosLat), toY(s.lat2));
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
     // Start marker (from first lap)
     if (traces[0].lat.length > 0) {
       ctx.fillStyle = "#22c55e";
@@ -305,7 +336,7 @@ export function TrackMap({
         ctx.stroke();
       }
     }
-  }, [traces, drawWidth, drawHeight, interactive, cursorMs, singleWithValues, sequentialRamp]);
+  }, [traces, drawWidth, drawHeight, interactive, cursorMs, singleWithValues, sequentialRamp, sfLine, splitLines]);
 
   useEffect(() => {
     drawTrack();

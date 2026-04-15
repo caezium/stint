@@ -137,6 +137,63 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     if "track_id" not in cols:
         await db.execute("ALTER TABLE sessions ADD COLUMN track_id INTEGER REFERENCES tracks(id)")
 
+    # Tracks widening
+    cur = await db.execute("PRAGMA table_info(tracks)")
+    tcols = {row[1] for row in await cur.fetchall()}
+    for col, ddl in [
+        ("short_name", "ALTER TABLE tracks ADD COLUMN short_name TEXT DEFAULT ''"),
+        ("city", "ALTER TABLE tracks ADD COLUMN city TEXT DEFAULT ''"),
+        ("type", "ALTER TABLE tracks ADD COLUMN type TEXT DEFAULT ''"),
+        ("surface", "ALTER TABLE tracks ADD COLUMN surface TEXT DEFAULT ''"),
+        ("timezone", "ALTER TABLE tracks ADD COLUMN timezone TEXT DEFAULT ''"),
+        ("sf_line_json", "ALTER TABLE tracks ADD COLUMN sf_line_json TEXT DEFAULT ''"),
+        ("split_lines_json", "ALTER TABLE tracks ADD COLUMN split_lines_json TEXT DEFAULT '[]'"),
+        ("pit_lane_json", "ALTER TABLE tracks ADD COLUMN pit_lane_json TEXT DEFAULT '[]'"),
+    ]:
+        if col not in tcols:
+            await db.execute(ddl)
+
+    # Laps: split_times_json
+    cur = await db.execute("PRAGMA table_info(laps)")
+    lcols = {row[1] for row in await cur.fetchall()}
+    if "split_times_json" not in lcols:
+        await db.execute("ALTER TABLE laps ADD COLUMN split_times_json TEXT DEFAULT ''")
+
+    # Log sheets table
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS session_log_sheets (
+            session_id TEXT PRIMARY KEY,
+            weather TEXT DEFAULT '',
+            track_temp REAL DEFAULT 0,
+            air_temp REAL DEFAULT 0,
+            tire_pressures_json TEXT DEFAULT '',
+            setup_notes TEXT DEFAULT '',
+            fuel_level REAL DEFAULT 0,
+            driver_rating INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Smart collections
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS smart_collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            query_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
+
+    # User settings KV
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS user_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        )"""
+    )
+
 
 async def init_db():
     db = await get_db()

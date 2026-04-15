@@ -423,6 +423,13 @@ export async function assignSession(
 
 // ---- Tracks ----
 
+export interface SfLine {
+  lat1: number;
+  lon1: number;
+  lat2: number;
+  lon2: number;
+}
+
 export interface Track {
   id: number;
   name: string;
@@ -430,6 +437,14 @@ export interface Track {
   length_m: number;
   gps_outline: number[][];
   sector_defs: Record<string, unknown>[];
+  short_name?: string;
+  city?: string;
+  type?: string;
+  surface?: string;
+  timezone?: string;
+  sf_line?: SfLine | null;
+  split_lines?: SfLine[];
+  pit_lane?: number[][];
 }
 
 export async function fetchTracks(): Promise<Track[]> {
@@ -461,6 +476,28 @@ export async function matchTrack(
   return res.json();
 }
 
+export interface RecomputeLapsResult {
+  laps: Lap[];
+  crossings: number;
+  best_lap_time_ms: number;
+}
+
+export async function recomputeLapsFromLine(
+  sessionId: string,
+  line: { lat1: number; lon1: number; lat2: number; lon2: number }
+): Promise<RecomputeLapsResult> {
+  const res = await fetch(`/api/sessions/${sessionId}/laps/recompute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(line),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to recompute laps: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface LapDiagnostic {
   num: number;
   start_time_ms_libxrk: number;
@@ -478,6 +515,75 @@ export async function fetchLapDiagnostics(sessionId: string): Promise<LapDiagnos
 export async function deleteTrack(id: number): Promise<void> {
   const res = await fetch(`/api/tracks/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to delete track: ${res.status}`);
+}
+
+export async function fetchTrackById(id: number): Promise<Track> {
+  const res = await fetch(`/api/tracks/${id}`);
+  if (!res.ok) throw new Error(`Failed to fetch track: ${res.status}`);
+  return res.json();
+}
+
+export async function updateTrack(id: number, track: Omit<Track, "id">): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(track),
+  });
+  if (!res.ok) throw new Error(`Failed to update track: ${res.status}`);
+}
+
+export async function setTrackSfLine(id: number, line: SfLine): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/sf-line`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(line),
+  });
+  if (!res.ok) throw new Error(`Failed to set S/F line: ${res.status}`);
+}
+
+export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/splits`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ splits }),
+  });
+  if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
+}
+
+export interface LogSheet {
+  weather: string;
+  track_temp: number;
+  air_temp: number;
+  tire_pressures_json: string;
+  setup_notes: string;
+  fuel_level: number;
+  driver_rating: number;
+}
+
+export async function fetchLogSheet(sessionId: string): Promise<LogSheet> {
+  const res = await fetch(`/api/sessions/${sessionId}/log-sheet`);
+  if (!res.ok) throw new Error(`Failed to fetch log sheet: ${res.status}`);
+  return res.json();
+}
+
+export async function saveLogSheet(sessionId: string, sheet: LogSheet): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/log-sheet`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sheet),
+  });
+  if (!res.ok) throw new Error(`Failed to save log sheet: ${res.status}`);
+}
+
+export async function recomputeFromTrack(sessionId: string, trackId: number): Promise<RecomputeLapsResult> {
+  const res = await fetch(`/api/sessions/${sessionId}/recompute-from-track?track_id=${trackId}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to recompute: ${res.status}`);
+  }
+  return res.json();
 }
 
 export function getExportPdfUrl(sessionId: string, lap?: number): string {
