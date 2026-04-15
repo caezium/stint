@@ -6,6 +6,7 @@ import {
   fetchSessions,
   fetchDrivers,
   fetchVehicles,
+  fetchTracks,
   fetchSmartCollections,
   createSmartCollection,
   deleteSmartCollection,
@@ -13,7 +14,9 @@ import {
   type Session,
   type Driver,
   type Vehicle,
+  type Track,
   type SmartCollection,
+  type SmartCollectionQuery,
 } from "@/lib/api";
 import { formatLapTime } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
@@ -33,6 +36,17 @@ export default function SessionsPage() {
   const [collections, setCollections] = useState<SmartCollection[]>([]);
   const [activeCollection, setActiveCollection] = useState<number | null>(null);
   const [collectionSessions, setCollectionSessions] = useState<Session[] | null>(null);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveDriver, setSaveDriver] = useState<number | "">("");
+  const [saveVehicle, setSaveVehicle] = useState<number | "">("");
+  const [saveTrack, setSaveTrack] = useState<number | "">("");
+  const [saveDateFrom, setSaveDateFrom] = useState("");
+  const [saveDateTo, setSaveDateTo] = useState("");
+  const [saveMinLaps, setSaveMinLaps] = useState<string>("");
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   function refreshCollections() {
     fetchSmartCollections().then(setCollections).catch(() => setCollections([]));
@@ -45,6 +59,7 @@ export default function SessionsPage() {
       .finally(() => setLoading(false));
     fetchDrivers().then(setDrivers).catch(() => setDrivers([]));
     fetchVehicles().then(setVehicles).catch(() => setVehicles([]));
+    fetchTracks().then(setTracks).catch(() => setTracks([]));
     refreshCollections();
   }, []);
 
@@ -58,14 +73,42 @@ export default function SessionsPage() {
       .catch(() => setCollectionSessions([]));
   }, [activeCollection]);
 
-  async function saveCurrentAsCollection() {
-    const name = prompt("Collection name?");
-    if (!name) return;
-    await createSmartCollection(name, {
-      driver_id: driverFilter === "" ? null : driverFilter,
-      vehicle_id: vehicleFilter === "" ? null : vehicleFilter,
-    });
-    refreshCollections();
+  function openSaveDialog() {
+    setSaveName("");
+    setSaveDriver(driverFilter);
+    setSaveVehicle(vehicleFilter);
+    setSaveTrack("");
+    setSaveDateFrom("");
+    setSaveDateTo("");
+    setSaveMinLaps("");
+    setSaveError(null);
+    setSaveOpen(true);
+  }
+
+  async function submitSave() {
+    if (!saveName.trim()) {
+      setSaveError("Name is required");
+      return;
+    }
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      const query: SmartCollectionQuery = {
+        driver_id: saveDriver === "" ? null : saveDriver,
+        vehicle_id: saveVehicle === "" ? null : saveVehicle,
+        track_id: saveTrack === "" ? null : saveTrack,
+        date_from: saveDateFrom || null,
+        date_to: saveDateTo || null,
+        min_laps: saveMinLaps === "" ? null : Number(saveMinLaps),
+      };
+      await createSmartCollection(saveName.trim(), query);
+      setSaveOpen(false);
+      refreshCollections();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSaveBusy(false);
+    }
   }
 
   const baseList = collectionSessions ?? sessions;
@@ -209,7 +252,7 @@ export default function SessionsPage() {
             </button>
           </div>
         ))}
-        <Button size="sm" variant="secondary" onClick={saveCurrentAsCollection}>
+        <Button size="sm" variant="secondary" onClick={openSaveDialog}>
           + Save current filter
         </Button>
       </div>
@@ -262,6 +305,106 @@ export default function SessionsPage() {
           </Link>
         ))}
       </div>
+
+      {saveOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => !saveBusy && setSaveOpen(false)}
+        >
+          <Card
+            className="w-full max-w-md mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CardContent className="p-5 space-y-3">
+              <h2 className="font-semibold text-base">New smart collection</h2>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Name *</label>
+                <Input
+                  autoFocus
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder="e.g. Spa 2024 – wet"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Driver</label>
+                  <select
+                    value={saveDriver}
+                    onChange={(e) => setSaveDriver(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="w-full bg-muted rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">Any driver</option>
+                    {drivers.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Vehicle</label>
+                  <select
+                    value={saveVehicle}
+                    onChange={(e) => setSaveVehicle(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="w-full bg-muted rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">Any vehicle</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1 col-span-2">
+                  <label className="text-xs text-muted-foreground">Track</label>
+                  <select
+                    value={saveTrack}
+                    onChange={(e) => setSaveTrack(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="w-full bg-muted rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">Any track</option>
+                    {tracks.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Date from</label>
+                  <Input type="date" value={saveDateFrom} onChange={(e) => setSaveDateFrom(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Date to</label>
+                  <Input type="date" value={saveDateTo} onChange={(e) => setSaveDateTo(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Min laps</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={saveMinLaps}
+                    onChange={(e) => setSaveMinLaps(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+              {saveError && (
+                <p className="text-xs text-destructive">{saveError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setSaveOpen(false)}
+                  disabled={saveBusy}
+                >
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={submitSave} disabled={saveBusy || !saveName.trim()}>
+                  {saveBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
