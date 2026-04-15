@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { fetchTracks, deleteTrack, type Track } from "@/lib/api";
 
 export default function TracksPage() {
@@ -27,16 +28,27 @@ export default function TracksPage() {
           <div key={t.id} className="rounded border border-border p-3 space-y-2">
             <div className="flex items-center justify-between">
               <b>{t.name}</b>
-              <button
-                onClick={async () => {
-                  await deleteTrack(t.id);
-                  refresh();
-                }}
-                className="text-xs text-muted-foreground hover:text-red-400"
-              >
-                Delete
-              </button>
+              <div className="flex gap-2">
+                <Link
+                  href={`/tracks/${t.id}/edit`}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Edit
+                </Link>
+                <button
+                  onClick={async () => {
+                    await deleteTrack(t.id);
+                    refresh();
+                  }}
+                  className="text-xs text-muted-foreground hover:text-red-400"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
+            {t.sf_line && (
+              <div className="text-xs text-green-400">S/F configured</div>
+            )}
             <div className="text-xs text-muted-foreground">
               {t.country || "—"} · {t.length_m ? `${t.length_m.toFixed(0)} m` : "length unknown"}
             </div>
