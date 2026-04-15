@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { fetchLogSheet, saveLogSheet, type LogSheet } from "@/lib/api";
+import { fetchLogSheet, saveLogSheet, fetchSessionWeather, type LogSheet } from "@/lib/api";
 
 interface Props {
   sessionId: string;
@@ -46,6 +46,21 @@ export function LogSheetPanel({ sessionId }: Props) {
     }
   }
 
+  async function doFetchWeather() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await fetchSessionWeather(sessionId);
+      const fresh = await fetchLogSheet(sessionId);
+      setSheet({ ...EMPTY, ...fresh });
+      setMsg(`Weather: ${r.weather || "(none)"}`);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card className="mb-4">
       <CardContent className="p-4">
@@ -80,6 +95,9 @@ export function LogSheetPanel({ sessionId }: Props) {
             </div>
             <div className="md:col-span-2 flex items-center gap-2">
               <Button size="sm" onClick={save} disabled={busy}>Save log sheet</Button>
+              <Button size="sm" variant="secondary" onClick={doFetchWeather} disabled={busy}>
+                Fetch weather
+              </Button>
               {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
             </div>
           </div>

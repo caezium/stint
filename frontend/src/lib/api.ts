@@ -739,6 +739,23 @@ export async function fetchLogSheet(sessionId: string): Promise<LogSheet> {
   return res.json();
 }
 
+export async function fetchSessionWeather(sessionId: string): Promise<{
+  ok: boolean;
+  weather: string;
+  air_temp: number;
+  track_temp: number;
+  source: string;
+}> {
+  const res = await fetch(`/api/sessions/${sessionId}/fetch-weather`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function saveLogSheet(sessionId: string, sheet: LogSheet): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/log-sheet`, {
     method: "PUT",
