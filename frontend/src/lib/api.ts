@@ -550,6 +550,25 @@ export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void
   if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
 }
 
+export interface MultiSessionReportRow {
+  session_id: string;
+  file_name: string;
+  driver: string;
+  venue: string;
+  log_date: string;
+  lap_count: number;
+  best_lap_ms: number | null;
+  avg_lap_ms: number | null;
+  counted_laps: number;
+}
+
+export async function fetchMultiSessionReport(sessionIds: string[]): Promise<{ sessions: MultiSessionReportRow[] }> {
+  const qs = new URLSearchParams({ session_ids: sessionIds.join(",") });
+  const res = await fetch(`/api/reports/multi-session?${qs}`);
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSetting(key: string): Promise<string> {
   const res = await fetch(`/api/settings/${encodeURIComponent(key)}`);
   if (!res.ok) throw new Error(`Failed: ${res.status}`);
