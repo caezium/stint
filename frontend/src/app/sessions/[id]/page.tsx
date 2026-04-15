@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import {
   fetchSession,
   fetchTrack,
+  fetchTrackById,
   fetchDrivers,
   fetchVehicles,
   fetchTracks,
@@ -32,8 +34,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { TrackMap } from "@/components/track-map";
-import { StartFinishEditor } from "@/components/start-finish-editor";
+
+const TrackMapLeaflet = dynamic(() => import("@/components/track-map-leaflet"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[280px] w-full flex items-center justify-center rounded bg-muted text-xs text-muted-foreground">
+      Loading map…
+    </div>
+  ),
+});
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -45,8 +54,8 @@ export default function SessionDetailPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [diagnostics, setDiagnostics] = useState<LapDiagnostic[] | null>(null);
   const [showDiag, setShowDiag] = useState(false);
-  const [showSF, setShowSF] = useState(false);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [boundTrack, setBoundTrack] = useState<Track | null>(null);
   const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +73,39 @@ export default function SessionDetailPage() {
     fetchTracks().then(setTracks).catch(() => setTracks([]));
   }, [id]);
 
-  const assignedTrack = tracks.find((t) => t.id === session?.track_id);
+  // Fetch the bound Track (with sf_line / split_lines / pit_lane) whenever track_id changes
+  useEffect(() => {
+    const tid = session?.track_id;
+    if (tid == null) {
+      setBoundTrack(null);
+      return;
+    }
+    let cancelled = false;
+    fetchTrackById(tid)
+      .then((t) => { if (!cancelled) setBoundTrack(t); })
+      .catch(() => { if (!cancelled) setBoundTrack(null); });
+    return () => { cancelled = true; };
+  }, [session?.track_id]);
+
+  const assignedTrack = boundTrack ?? tracks.find((t) => t.id === session?.track_id) ?? null;
+
+  // Helper: parse SF/splits whether they are objects, arrays, or JSON strings
+  function parseMaybeJson<T>(v: unknown): T | null {
+    if (v == null) return null;
+    if (typeof v === "string") {
+      try { return JSON.parse(v) as T; } catch { return null; }
+    }
+    return v as T;
+  }
+  const sfLineParsed = parseMaybeJson<{ lat1: number; lon1: number; lat2: number; lon2: number }>(
+    boundTrack?.sf_line as unknown
+  );
+  const splitsParsed =
+    parseMaybeJson<{ lat1: number; lon1: number; lat2: number; lon2: number }[]>(
+      boundTrack?.split_lines as unknown
+    ) ?? [];
+  const pitLaneParsed =
+    parseMaybeJson<number[][]>(boundTrack?.pit_lane as unknown) ?? undefined;
 
   async function handleAssign(field: "driver_id" | "vehicle_id", value: number | null) {
     if (!session) return;
@@ -364,31 +405,27 @@ export default function SessionDetailPage() {
           <Card>
             <CardContent className="p-4">
               <h2 className="font-semibold mb-3">Track Map</h2>
-              <TrackMap
-                lat={track?.lat ?? []}
-                lon={track?.lon ?? []}
-                speed={track?.speed}
-                width={340}
-                height={280}
-              />
-              <div className="mt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowSF((v) => !v)}
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                >
-                  {showSF ? "Hide" : "Set"} start/finish line
-                </button>
-                {showSF && (
-                  <div className="mt-2">
-                    <StartFinishEditor
-                      sessionId={id}
-                      track={track}
-                      onRecomputed={() => fetchSession(id).then(setSession)}
-                    />
+              <div className="h-[280px] w-full rounded overflow-hidden">
+                {track && track.lat.length > 0 ? (
+                  <TrackMapLeaflet
+                    outline={track.lat.map((la, i) => [la, track.lon[i]])}
+                    speed={track.speed}
+                    sfLine={sfLineParsed}
+                    splitLines={splitsParsed}
+                    pitLane={pitLaneParsed}
+                    height="100%"
+                  />
+                ) : (
+                  <div className="h-full w-full flex items-center justify-center rounded bg-muted text-xs text-muted-foreground">
+                    No GPS data available
                   </div>
                 )}
               </div>
+              {!session.track_id && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  No track assigned — run auto-match on re-upload, or create a track manually.
+                </p>
+              )}
             </CardContent>
           </Card>
 
