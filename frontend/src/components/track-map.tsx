@@ -2,6 +2,12 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useCursorStore } from "@/stores/cursor-store";
+import {
+  useUnitsStore,
+  COLORMAP_RAMPS,
+  sampleRamp,
+  rampToCssGradient,
+} from "@/stores/units-store";
 
 export interface LapTrace {
   lapNum: number;
@@ -92,52 +98,15 @@ function buildTransform(
   return { correctedLon, minLat, maxLat, minLon, scale, offsetX, offsetY };
 }
 
-/** Diverging colormap centered on 0. n in [-1, 1]. Blue → grey → red. */
+// Diverging: blue → grey → red (fixed; signed data)
+const DIVERGING_RAMP: [number, number, number][] = [
+  [59, 130, 246],
+  [170, 170, 170],
+  [239, 68, 68],
+];
 function divergingColor(n: number): string {
-  // Clamp
-  const t = Math.max(-1, Math.min(1, n));
-  if (t >= 0) {
-    // grey (170,170,170) → red (239,68,68)
-    const r = Math.round(170 + (239 - 170) * t);
-    const g = Math.round(170 + (68 - 170) * t);
-    const b = Math.round(170 + (68 - 170) * t);
-    return `rgb(${r},${g},${b})`;
-  } else {
-    const k = -t;
-    // grey (170,170,170) → blue (59,130,246)
-    const r = Math.round(170 + (59 - 170) * k);
-    const g = Math.round(170 + (130 - 170) * k);
-    const b = Math.round(170 + (246 - 170) * k);
-    return `rgb(${r},${g},${b})`;
-  }
-}
-
-/** Sequential colormap. f in [0, 1]. Rainbow-ish: purple → blue → cyan → green → yellow → red. */
-function sequentialColor(f: number): string {
-  const t = Math.max(0, Math.min(1, f));
-  // Viridis-ish: dark purple → teal → yellow (perceptually uniform, colorblind-safe)
-  const stops: [number, number, number][] = [
-    [68, 1, 84],     // dark purple
-    [72, 40, 120],   // purple
-    [62, 74, 137],   // blue-purple
-    [49, 104, 142],  // blue
-    [38, 130, 142],  // teal-blue
-    [31, 158, 137],  // teal
-    [53, 183, 121],  // green-teal
-    [109, 205, 89],  // green
-    [180, 222, 44],  // yellow-green
-    [253, 231, 37],  // yellow
-  ];
-  const segs = stops.length - 1;
-  const pos = t * segs;
-  const i = Math.min(segs - 1, Math.floor(pos));
-  const u = pos - i;
-  const a = stops[i];
-  const b = stops[i + 1];
-  const r = Math.round(a[0] + (b[0] - a[0]) * u);
-  const g = Math.round(a[1] + (b[1] - a[1]) * u);
-  const bl = Math.round(a[2] + (b[2] - a[2]) * u);
-  return `rgb(${r},${g},${bl})`;
+  // n in [-1,1] → [0,1]
+  return sampleRamp(DIVERGING_RAMP, (Math.max(-1, Math.min(1, n)) + 1) / 2);
 }
 
 function findNearestIndex(timecodes: number[], targetMs: number): number {
@@ -173,6 +142,8 @@ export function TrackMap({
   const transformRef = useRef<CoordTransform | null>(null);
   const cursorMs = useCursorStore((s) => s.cursorMs);
   const setCursorMs = useCursorStore((s) => s.setCursorMs);
+  const colormap = useUnitsStore((s) => s.colormap);
+  const sequentialRamp = COLORMAP_RAMPS[colormap];
 
   const [box, setBox] = useState<{ w: number; h: number }>({
     w: width ?? 300,
@@ -269,9 +240,9 @@ export function TrackMap({
           const n = Math.max(-1, Math.min(1, vals[i] / bound));
           color = divergingColor(n);
         } else {
-          // Sequential rainbow: purple → blue → cyan → green → yellow → red
+          // Sequential from selected colormap
           const f = (vals[i] - minV) / range;
-          color = sequentialColor(f);
+          color = sampleRamp(sequentialRamp, f);
         }
         ctx.strokeStyle = color;
         ctx.beginPath();
@@ -334,7 +305,7 @@ export function TrackMap({
         ctx.stroke();
       }
     }
-  }, [traces, drawWidth, drawHeight, interactive, cursorMs, singleWithValues]);
+  }, [traces, drawWidth, drawHeight, interactive, cursorMs, singleWithValues, sequentialRamp]);
 
   useEffect(() => {
     drawTrack();
@@ -429,8 +400,8 @@ export function TrackMap({
         const fmt = (v: number) =>
           valueUnits === "m" ? Math.round(v).toString() : v.toFixed(1);
         const gradient = signed
-          ? "linear-gradient(to right, rgb(59,130,246), rgb(170,170,170), rgb(239,68,68))"
-          : "linear-gradient(to right, rgb(68,1,84), rgb(62,74,137), rgb(38,130,142), rgb(53,183,121), rgb(180,222,44), rgb(253,231,37))";
+          ? rampToCssGradient(DIVERGING_RAMP)
+          : rampToCssGradient(sequentialRamp);
         return (
           <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1.5 text-[10px] text-white/70 bg-black/40 rounded px-1.5 py-0.5">
             <span>{fmt(lo)}{valueUnits}</span>
