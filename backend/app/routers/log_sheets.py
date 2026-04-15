@@ -225,7 +225,7 @@ def _fetch_openmeteo_history(lat: float, lon: float, dt: int) -> dict:
         95: "thunderstorm", 96: "thunderstorm w/ hail", 99: "thunderstorm w/ heavy hail",
     }
     desc = wmo.get(code, f"code {code}" if code is not None else "")
-    return {"temp": temp, "weather": [{"description": desc}]}
+    return {"data": [{"temp": temp, "weather": [{"description": desc}]}]}
 
 
 @router.post("/sessions/{session_id}/fetch-weather")
@@ -253,8 +253,15 @@ async def fetch_weather(session_id: str):
             )
         except Exception as e:
             errors.append(f"OpenWeather: {e}")
-    # Fallback to keyless Open-Meteo archive
-    if payload is None:
+    # Fallback to keyless Open-Meteo if OpenWeather returned nothing useful
+    def _has_data(p: dict | None) -> bool:
+        if not p:
+            return False
+        d = p.get("data") or p.get("current")
+        if isinstance(d, dict):
+            return bool(d)
+        return bool(d)
+    if not _has_data(payload):
         try:
             payload = await asyncio.get_event_loop().run_in_executor(
                 None, _fetch_openmeteo_history, lat, lon, dt
