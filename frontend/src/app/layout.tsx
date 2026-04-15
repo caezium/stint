@@ -50,6 +50,24 @@ export default function RootLayout({
                   U
                 </kbd>
               </Link>
+              <Link
+                href="/tracks"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Tracks
+              </Link>
+              <Link
+                href="/reports"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Reports
+              </Link>
+              <Link
+                href="/settings"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Settings
+              </Link>
             </nav>
           </div>
         </header>
