@@ -149,18 +149,28 @@ def _parse_session_datetime(log_date: str, log_time: str, track_tz: str = "") ->
             tz = ZoneInfo(track_tz)  # type: ignore[assignment]
         except Exception:
             tz = timezone.utc
-    fmts = [
-        ("%Y-%m-%d %H:%M:%S", f"{log_date} {log_time or '12:00:00'}"),
-        ("%Y-%m-%d %H:%M", f"{log_date} {log_time or '12:00'}"),
-        ("%Y-%m-%d", log_date),
-    ]
+    date_patterns = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
+    time_patterns = ["%H:%M:%S", "%H:%M"]
+    fmts: list[tuple[str, str]] = []
+    for dp in date_patterns:
+        for tp in time_patterns:
+            fmts.append((f"{dp} {tp}", f"{log_date} {log_time or '12:00:00'}"))
+        fmts.append((dp, log_date))
+    now_ts = int(datetime.now(tz=timezone.utc).timestamp())
+    candidates: list[int] = []
     for fmt, s in fmts:
         try:
             dt = datetime.strptime(s, fmt).replace(tzinfo=tz)
-            return int(dt.timestamp())
+            candidates.append(int(dt.timestamp()))
         except ValueError:
             continue
-    return None
+    if not candidates:
+        return None
+    # Prefer the most recent past timestamp; fall back to the earliest future one.
+    past = [ts for ts in candidates if ts <= now_ts]
+    if past:
+        return max(past)
+    return min(candidates)
 
 
 def _fetch_openweather_timemachine(lat: float, lon: float, dt: int, api_key: str) -> dict:
@@ -172,18 +182,57 @@ def _fetch_openweather_timemachine(lat: float, lon: float, dt: int, api_key: str
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _fetch_openmeteo_history(lat: float, lon: float, dt: int) -> dict:
+    """Keyless historical weather via Open-Meteo archive API.
+
+    Returns a dict shaped like OpenWeather's single-hour result so the caller
+    can reuse extraction logic: {"temp": <c>, "weather": [{"description": ...}]}.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    moment = _dt.fromtimestamp(dt, tz=_tz.utc)
+    date_str = moment.strftime("%Y-%m-%d")
+    hour_str = moment.strftime("%Y-%m-%dT%H:00")
+    qs = urllib.parse.urlencode({
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": date_str,
+        "end_date": date_str,
+        "hourly": "temperature_2m,weathercode",
+    })
+    url = f"https://archive-api.open-meteo.com/v1/archive?{qs}"
+    req = urllib.request.Request(url, headers={"User-Agent": "stint/0.1"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+
+    times = (raw.get("hourly") or {}).get("time") or []
+    temps = (raw.get("hourly") or {}).get("temperature_2m") or []
+    codes = (raw.get("hourly") or {}).get("weathercode") or []
+    idx = 0
+    for i, t in enumerate(times):
+        if t == hour_str:
+            idx = i
+            break
+    temp = temps[idx] if idx < len(temps) else None
+    code = codes[idx] if idx < len(codes) else None
+    # WMO weather-code → text (abridged)
+    wmo = {
+        0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+        45: "fog", 48: "depositing rime fog",
+        51: "light drizzle", 53: "drizzle", 55: "dense drizzle",
+        61: "light rain", 63: "rain", 65: "heavy rain",
+        71: "light snow", 73: "snow", 75: "heavy snow",
+        80: "rain showers", 81: "heavy showers", 82: "violent showers",
+        95: "thunderstorm", 96: "thunderstorm w/ hail", 99: "thunderstorm w/ heavy hail",
+    }
+    desc = wmo.get(code, f"code {code}" if code is not None else "")
+    return {"temp": temp, "weather": [{"description": desc}]}
+
+
 @router.post("/sessions/{session_id}/fetch-weather")
 async def fetch_weather(session_id: str):
     meta = await _get_session_metadata(session_id)
     if not meta:
         raise HTTPException(404, "Session not found")
-
-    api_key = await _get_openweather_key()
-    if not api_key:
-        raise HTTPException(
-            400,
-            "OpenWeather API key not configured. Set user_settings.openweather_api_key.",
-        )
 
     latlon = _get_session_latlon(session_id)
     if not latlon:
@@ -194,15 +243,25 @@ async def fetch_weather(session_id: str):
         raise HTTPException(400, "Session has no log date; cannot fetch historical weather")
 
     lat, lon = latlon
-    try:
-        payload = await asyncio.get_event_loop().run_in_executor(
-            None, _fetch_openweather_timemachine, lat, lon, dt, api_key
-        )
-    except Exception as e:
-        raise HTTPException(
-            501,
-            f"OpenWeather call failed: {e}. Verify key, plan, and network access.",
-        )
+    api_key = await _get_openweather_key()
+    payload: dict | None = None
+    errors: list[str] = []
+    if api_key:
+        try:
+            payload = await asyncio.get_event_loop().run_in_executor(
+                None, _fetch_openweather_timemachine, lat, lon, dt, api_key
+            )
+        except Exception as e:
+            errors.append(f"OpenWeather: {e}")
+    # Fallback to keyless Open-Meteo archive
+    if payload is None:
+        try:
+            payload = await asyncio.get_event_loop().run_in_executor(
+                None, _fetch_openmeteo_history, lat, lon, dt
+            )
+        except Exception as e:
+            errors.append(f"Open-Meteo: {e}")
+            raise HTTPException(501, "; ".join(errors) or "Weather fetch failed")
 
     # Extract fields — shape differs by plan
     data_list = payload.get("data") or payload.get("current") or []
