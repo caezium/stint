@@ -21,7 +21,21 @@ import { MathChannelEditor } from "@/components/math-channel-editor";
 import { LayoutManager } from "@/components/layout-manager";
 import { SessionNotes } from "@/components/session-notes";
 import { UnitSettings } from "@/components/unit-settings";
-import { useUnitsStore, isSpeedUnits, convertSpeed, SPEED_UNIT_LABEL } from "@/stores/units-store";
+import {
+  useUnitsStore,
+  isSpeedUnits,
+  convertSpeed,
+  SPEED_UNIT_LABEL,
+  isTemperatureUnits,
+  convertTemperature,
+  TEMP_UNIT_LABEL,
+  isDistanceUnits,
+  convertDistance,
+  DISTANCE_UNIT_LABEL,
+  isAngularUnits,
+  convertAngular,
+  ANGULAR_UNIT_LABEL,
+} from "@/stores/units-store";
 import { getExportCsvUrl } from "@/lib/api";
 
 // ---- Chart config types ----
@@ -417,6 +431,9 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   }, [mapLapTraces, singleFallback, trackOverlay, trackColorChannel]);
 
   const speedUnit = useUnitsStore((s) => s.speedUnit);
+  const temperatureUnit = useUnitsStore((s) => s.temperatureUnit);
+  const distanceUnit = useUnitsStore((s) => s.distanceUnit);
+  const angularUnit = useUnitsStore((s) => s.angularUnit);
 
   const valueLabel =
     trackColorChannel === "speed" ? "Speed" : trackColorChannel;
@@ -424,19 +441,32 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     trackColorChannel === "speed"
       ? "m/s"
       : session?.channels.find((c) => c.name === trackColorChannel)?.units || "";
-  const isSpeedCh = isSpeedUnits(nativeUnits);
-  const valueUnits = isSpeedCh ? SPEED_UNIT_LABEL[speedUnit] : nativeUnits;
+  // Pick a unit-conversion strategy based on channel's native units
+  let valueUnits = nativeUnits;
+  let mapConvert: ((v: number) => number) | null = null;
+  if (isSpeedUnits(nativeUnits)) {
+    valueUnits = SPEED_UNIT_LABEL[speedUnit];
+    mapConvert = (v) => convertSpeed(v, nativeUnits, speedUnit);
+  } else if (isTemperatureUnits(nativeUnits)) {
+    valueUnits = TEMP_UNIT_LABEL[temperatureUnit];
+    mapConvert = (v) => convertTemperature(v, nativeUnits, temperatureUnit);
+  } else if (isDistanceUnits(nativeUnits)) {
+    valueUnits = DISTANCE_UNIT_LABEL[distanceUnit];
+    mapConvert = (v) => convertDistance(v, nativeUnits, distanceUnit);
+  } else if (isAngularUnits(nativeUnits)) {
+    valueUnits = ANGULAR_UNIT_LABEL[angularUnit];
+    mapConvert = (v) => convertAngular(v, nativeUnits, angularUnit);
+  }
 
-  // Convert speed-channel values to the user's selected speed unit
   const convertedMapTraces: LapTrace[] = useMemo(() => {
-    if (!isSpeedCh) return finalMapTraces;
+    if (!mapConvert) return finalMapTraces;
+    const fn = mapConvert;
     return finalMapTraces.map((tr) => ({
       ...tr,
-      values: tr.values
-        ? tr.values.map((v) => convertSpeed(v, nativeUnits, speedUnit))
-        : undefined,
+      values: tr.values ? tr.values.map(fn) : undefined,
     }));
-  }, [finalMapTraces, isSpeedCh, nativeUnits, speedUnit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finalMapTraces, nativeUnits, speedUnit, temperatureUnit, distanceUnit, angularUnit]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

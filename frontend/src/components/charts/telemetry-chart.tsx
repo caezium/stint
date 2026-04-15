@@ -4,7 +4,21 @@ import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useUnitsStore, isSpeedUnits, convertSpeed, SPEED_UNIT_LABEL } from "@/stores/units-store";
+import {
+  useUnitsStore,
+  isSpeedUnits,
+  convertSpeed,
+  SPEED_UNIT_LABEL,
+  isTemperatureUnits,
+  convertTemperature,
+  TEMP_UNIT_LABEL,
+  isDistanceUnits,
+  convertDistance,
+  DISTANCE_UNIT_LABEL,
+  isAngularUnits,
+  convertAngular,
+  ANGULAR_UNIT_LABEL,
+} from "@/stores/units-store";
 import { fetchResampledData, fetchDistance, type ResampledData, type DistanceData } from "@/lib/api";
 import type uPlot from "uplot";
 import type { Lap } from "@/lib/api";
@@ -47,6 +61,9 @@ export function TelemetryChart({
   const { refLap, altLap, extraLaps, crossSessionLaps } = useLapStore();
   const sessionChannels = useSessionStore((s) => s.session?.channels);
   const speedUnit = useUnitsStore((s) => s.speedUnit);
+  const temperatureUnit = useUnitsStore((s) => s.temperatureUnit);
+  const distanceUnit = useUnitsStore((s) => s.distanceUnit);
+  const angularUnit = useUnitsStore((s) => s.angularUnit);
   const setCursorMs = useCursorStore((s) => s.setCursorMs);
   const zoomRange = useCursorStore((s) => s.zoomRange);
   const setZoomRange = useCursorStore((s) => s.setZoomRange);
@@ -194,10 +211,23 @@ export function TelemetryChart({
         // Apply user-selected unit conversion for speed channels
         const meta = sessionChannels?.find((c) => c.name === chName);
         const nativeUnits = meta?.units ?? "";
-        const isSpeed = isSpeedUnits(nativeUnits);
-        const displayUnits = isSpeed ? SPEED_UNIT_LABEL[speedUnit] : nativeUnits;
-        const converted = isSpeed
-          ? Array.from(vals, (v) => convertSpeed(v, nativeUnits, speedUnit))
+        let displayUnits = nativeUnits;
+        let convertFn: ((v: number) => number) | null = null;
+        if (isSpeedUnits(nativeUnits)) {
+          displayUnits = SPEED_UNIT_LABEL[speedUnit];
+          convertFn = (v) => convertSpeed(v, nativeUnits, speedUnit);
+        } else if (isTemperatureUnits(nativeUnits)) {
+          displayUnits = TEMP_UNIT_LABEL[temperatureUnit];
+          convertFn = (v) => convertTemperature(v, nativeUnits, temperatureUnit);
+        } else if (isDistanceUnits(nativeUnits)) {
+          displayUnits = DISTANCE_UNIT_LABEL[distanceUnit];
+          convertFn = (v) => convertDistance(v, nativeUnits, distanceUnit);
+        } else if (isAngularUnits(nativeUnits)) {
+          displayUnits = ANGULAR_UNIT_LABEL[angularUnit];
+          convertFn = (v) => convertAngular(v, nativeUnits, angularUnit);
+        }
+        const converted = convertFn
+          ? Array.from(vals, convertFn)
           : Array.from(vals);
 
         const showLapLabel = activeLaps.length > 1;
@@ -332,7 +362,7 @@ export function TelemetryChart({
     };
 
     return { data: chartData, options: opts };
-  }, [activeLaps, lapDataMap, distDataMap, channels, height, setCursorMs, setZoomRange, xAxisMode, speedUnit, sessionChannels]);
+  }, [activeLaps, lapDataMap, distDataMap, channels, height, setCursorMs, setZoomRange, xAxisMode, speedUnit, temperatureUnit, distanceUnit, angularUnit, sessionChannels]);
 
   // Resize observer to keep chart width in sync with container
   const handleResize = useCallback(() => {
