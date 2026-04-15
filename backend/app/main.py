@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import upload, sessions, channels, sectors, math_channels, layouts, profiles, export, compare
+from .routers import upload, sessions, channels, sectors, math_channels, layouts, profiles, export, compare, tracks
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.include_router(layouts.router, prefix="/api")
 app.include_router(profiles.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(compare.router, prefix="/api")
+app.include_router(tracks.router, prefix="/api")
 
 
 @app.get("/api/health")

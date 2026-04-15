@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS vehicles (
     engine TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS tracks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    country TEXT DEFAULT '',
+    length_m REAL DEFAULT 0,
+    gps_outline_json TEXT DEFAULT '[]',
+    sector_defs_json TEXT DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
