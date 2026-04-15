@@ -480,6 +480,63 @@ async def get_delta_t(
     }
 
 
+@router.get("/sessions/{session_id}/predictive")
+async def get_predictive(
+    session_id: str,
+    ref_lap: int = Query(..., description="Reference (fast) lap"),
+    current_lap: int = Query(..., description="Current lap to compare"),
+):
+    """
+    Predictive delta: how far ahead/behind the current lap is vs ref at each
+    point on the track. Returns {distance: [...], delta_ms: [...]}.
+    Negative = gaining on ref; positive = losing time.
+    """
+    gps_channels = ["GPS Latitude", "GPS Longitude"]
+    ref_table = get_resampled_lap_data(session_id, gps_channels, ref_lap)
+    cur_table = get_resampled_lap_data(session_id, gps_channels, current_lap)
+    if ref_table is None or cur_table is None:
+        raise HTTPException(404, "GPS data not available for one or both laps")
+
+    def _compute_distance_time(table):
+        tc = table.column("timecodes").to_pylist()
+        lats = table.column("GPS Latitude").to_pylist()
+        lons = table.column("GPS Longitude").to_pylist()
+        R = 6371000
+        dist = [0.0]
+        for i in range(1, len(lats)):
+            lat1, lat2 = math.radians(lats[i - 1]), math.radians(lats[i])
+            dlat = lat2 - lat1
+            dlon = math.radians(lons[i] - lons[i - 1])
+            a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            dist.append(dist[-1] + R * c)
+        time_s = [(t - tc[0]) / 1000.0 for t in tc]
+        return dist, time_s
+
+    ref_dist, ref_time = _compute_distance_time(ref_table)
+    cur_dist, cur_time = _compute_distance_time(cur_table)
+
+    cur_dist_np = np.array(cur_dist)
+    cur_time_np = np.array(cur_time)
+    ref_dist_np = np.array(ref_dist)
+    ref_time_np = np.array(ref_time)
+
+    max_dist = min(ref_dist_np[-1] if len(ref_dist_np) else 0.0,
+                   cur_dist_np[-1] if len(cur_dist_np) else 0.0)
+    mask = ref_dist_np <= max_dist
+    out_dist = ref_dist_np[mask]
+    out_ref_time = ref_time_np[mask]
+    out_cur_time = np.interp(out_dist, cur_dist_np, cur_time_np)
+
+    # delta_ms = current elapsed - ref elapsed (positive = losing)
+    delta_ms = (out_cur_time - out_ref_time) * 1000.0
+
+    return {
+        "distance": [round(float(d), 2) for d in out_dist.tolist()],
+        "delta_ms": [round(float(d), 1) for d in delta_ms.tolist()],
+    }
+
+
 @router.get("/sessions/{session_id}/stats")
 async def get_channel_stats(
     session_id: str,

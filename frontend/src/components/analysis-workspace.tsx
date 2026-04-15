@@ -12,6 +12,8 @@ import { HistogramChart } from "@/components/charts/histogram-chart";
 import { ScatterChart } from "@/components/charts/scatter-chart";
 import { LapTimeChart } from "@/components/charts/lap-time-chart";
 import { FFTChart } from "@/components/charts/fft-chart";
+import { PredictiveChart } from "@/components/charts/predictive-chart";
+import { SuspensionChart } from "@/components/charts/suspension-chart";
 import { LapSelector } from "@/components/lap-selector";
 import { ChannelBrowser } from "@/components/channel-browser";
 import { TrackMap, type LapTrace } from "@/components/track-map";
@@ -49,7 +51,9 @@ type ChartType =
   | "laptime"
   | "sector"
   | "stats"
-  | "fft";
+  | "fft"
+  | "predictive"
+  | "suspension";
 
 interface ChartConfig {
   id: string;
@@ -67,6 +71,8 @@ const CHART_TYPE_LABELS: Record<ChartType, string> = {
   sector: "Sector Table",
   stats: "Statistics",
   fft: "FFT Spectrum",
+  predictive: "Predictive",
+  suspension: "Suspension",
 };
 
 function defaultCharts(): ChartConfig[] {
@@ -835,6 +841,12 @@ function ChartRenderer({
           height={height}
         />
       );
+
+    case "predictive":
+      return <PredictiveChart sessionId={sessionId} height={height} />;
+
+    case "suspension":
+      return <SuspensionChart sessionId={sessionId} height={height} />;
 
     default:
       return (
