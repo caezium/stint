@@ -1,5 +1,6 @@
 """Session listing and detail endpoints."""
 
+import json
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -65,7 +66,15 @@ async def get_session(session_id: str):
         # Laps
         cursor = await db.execute(
             "SELECT * FROM laps WHERE session_id = ? ORDER BY num", (session_id,))
-        laps = [dict(row) async for row in cursor]
+        laps = []
+        async for row in cursor:
+            d = dict(row)
+            raw = d.pop("split_times_json", None)
+            try:
+                d["split_times"] = json.loads(raw) if raw else []
+            except Exception:
+                d["split_times"] = []
+            laps.append(d)
 
         # Channels
         cursor = await db.execute(

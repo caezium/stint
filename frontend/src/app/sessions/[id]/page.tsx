@@ -291,61 +291,69 @@ export default function SessionDetailPage() {
                   </Badge>
                 </h2>
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-20">Lap #</TableHead>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Delta</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {session.laps.map((lap) => {
-                    const isOutLap = lap.num === 0;
-                    const isBest =
-                      bestTime !== null &&
-                      lap.num > 0 &&
-                      lap.duration_ms === bestTime;
-                    const delta =
-                      bestTime !== null && lap.num > 0 && lap.duration_ms > 0
-                        ? lap.duration_ms - bestTime
-                        : null;
-
-                    return (
-                      <TableRow
-                        key={lap.num}
-                        className={
-                          isOutLap
-                            ? "opacity-50"
-                            : isBest
-                              ? "bg-green-500/10"
-                              : ""
-                        }
-                      >
-                        <TableCell className="font-mono text-sm">
-                          {isOutLap ? "Out" : lap.num}
-                        </TableCell>
-                        <TableCell
-                          className={`font-mono text-sm ${
-                            isBest ? "text-green-400 font-semibold" : ""
-                          }`}
-                        >
-                          {lap.duration_ms > 0
-                            ? formatLapTime(lap.duration_ms)
-                            : "—"}
-                        </TableCell>
-                        <TableCell className="font-mono text-sm text-muted-foreground">
-                          {delta !== null && delta > 0
-                            ? `+${(delta / 1000).toFixed(3)}`
-                            : delta === 0
-                              ? "BEST"
-                              : "—"}
-                        </TableCell>
+              {(() => {
+                const maxSplits = Math.max(
+                  0,
+                  ...session.laps.map((l) => (l.split_times ?? []).length),
+                );
+                return (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-20">Lap #</TableHead>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Delta</TableHead>
+                        {Array.from({ length: maxSplits }).map((_, i) => (
+                          <TableHead key={i} className="text-xs">S{i + 1}</TableHead>
+                        ))}
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {session.laps.map((lap) => {
+                        const isOutLap = lap.num === 0;
+                        const isBest =
+                          bestTime !== null &&
+                          lap.num > 0 &&
+                          lap.duration_ms === bestTime;
+                        const delta =
+                          bestTime !== null && lap.num > 0 && lap.duration_ms > 0
+                            ? lap.duration_ms - bestTime
+                            : null;
+                        const splits = lap.split_times ?? [];
+                        return (
+                          <TableRow
+                            key={lap.num}
+                            className={
+                              isOutLap ? "opacity-50" : isBest ? "bg-green-500/10" : ""
+                            }
+                          >
+                            <TableCell className="font-mono text-sm">
+                              {isOutLap ? "Out" : lap.num}
+                            </TableCell>
+                            <TableCell
+                              className={`font-mono text-sm ${isBest ? "text-green-400 font-semibold" : ""}`}
+                            >
+                              {lap.duration_ms > 0 ? formatLapTime(lap.duration_ms) : "—"}
+                            </TableCell>
+                            <TableCell className="font-mono text-sm text-muted-foreground">
+                              {delta !== null && delta > 0
+                                ? `+${(delta / 1000).toFixed(3)}`
+                                : delta === 0
+                                  ? "BEST"
+                                  : "—"}
+                            </TableCell>
+                            {Array.from({ length: maxSplits }).map((_, i) => (
+                              <TableCell key={i} className="font-mono text-xs text-muted-foreground">
+                                {splits[i] != null ? (splits[i]! / 1000).toFixed(2) : "—"}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                );
+              })()}
             </CardContent>
           </Card>
 
