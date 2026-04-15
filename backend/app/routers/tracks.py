@@ -147,6 +147,30 @@ async def set_track_sf_line(track_id: int, body: SfLineBody):
         await db.close()
 
 
+class PitLaneVertex(BaseModel):
+    lat: float
+    lon: float
+
+
+class PitLaneBody(BaseModel):
+    polygon: List[PitLaneVertex]
+
+
+@router.put("/tracks/{track_id}/pit-lane")
+async def set_track_pit_lane(track_id: int, body: PitLaneBody):
+    db = await get_db()
+    try:
+        poly = [[v.lat, v.lon] for v in body.polygon]
+        await db.execute(
+            "UPDATE tracks SET pit_lane_json=? WHERE id=?",
+            (json.dumps(poly), track_id),
+        )
+        await db.commit()
+        return {"ok": True, "vertices": len(poly)}
+    finally:
+        await db.close()
+
+
 class SplitsBody(BaseModel):
     splits: List[SfLineBody]
 

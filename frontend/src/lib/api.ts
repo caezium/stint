@@ -618,6 +618,18 @@ export async function setTrackSfLine(id: number, line: SfLine): Promise<void> {
   if (!res.ok) throw new Error(`Failed to set S/F line: ${res.status}`);
 }
 
+export async function setTrackPitLane(
+  id: number,
+  polygon: { lat: number; lon: number }[]
+): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/pit-lane`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ polygon }),
+  });
+  if (!res.ok) throw new Error(`Failed to set pit lane: ${res.status}`);
+}
+
 export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void> {
   const res = await fetch(`/api/tracks/${id}/splits`, {
     method: "PUT",

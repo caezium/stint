@@ -7,6 +7,7 @@ import {
   fetchTrackById,
   setTrackSfLine,
   setTrackSplits,
+  setTrackPitLane,
   updateTrack,
   type Track,
   type SfLine,
@@ -15,7 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-type Mode = "sf" | "split";
+type Mode = "sf" | "split" | "pit";
+type LatLon = { lat: number; lon: number };
 
 export default function TrackEditPage() {
   const params = useParams();
@@ -23,9 +25,11 @@ export default function TrackEditPage() {
 
   const [track, setTrack] = useState<Track | null>(null);
   const [mode, setMode] = useState<Mode>("sf");
-  const [sfPoints, setSfPoints] = useState<{ lat: number; lon: number }[]>([]);
+  const [sfPoints, setSfPoints] = useState<LatLon[]>([]);
   const [splits, setSplits] = useState<SfLine[]>([]);
-  const [pendingSplit, setPendingSplit] = useState<{ lat: number; lon: number }[]>([]);
+  const [pendingSplit, setPendingSplit] = useState<LatLon[]>([]);
+  const [pitLane, setPitLane] = useState<LatLon[]>([]);
+  const [pitClosed, setPitClosed] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -40,6 +44,10 @@ export default function TrackEditPage() {
         ]);
       }
       setSplits(t.split_lines ?? []);
+      if (Array.isArray(t.pit_lane) && t.pit_lane.length >= 3) {
+        setPitLane(t.pit_lane.map((v) => ({ lat: v[0], lon: v[1] })));
+        setPitClosed(true);
+      }
     });
   }, [id]);
 
@@ -83,7 +91,7 @@ export default function TrackEditPage() {
     const lon = bounds.xToLon(x);
     if (mode === "sf") {
       setSfPoints((p) => (p.length >= 2 ? [{ lat, lon }] : [...p, { lat, lon }]));
-    } else {
+    } else if (mode === "split") {
       setPendingSplit((p) => {
         const nxt = [...p, { lat, lon }];
         if (nxt.length === 2) {
@@ -95,8 +103,46 @@ export default function TrackEditPage() {
         }
         return nxt;
       });
+    } else {
+      // pit-lane mode: append vertex, reopen if we were closed
+      setPitClosed(false);
+      setPitLane((p) => [...p, { lat, lon }]);
     }
     setMsg(null);
+  }
+
+  function handleSvgDblClick() {
+    if (mode !== "pit") return;
+    if (pitLane.length >= 3) setPitClosed(true);
+  }
+
+  useEffect(() => {
+    function onKey(ev: KeyboardEvent) {
+      if (mode !== "pit") return;
+      if (ev.key === "Enter" && pitLane.length >= 3) {
+        setPitClosed(true);
+        ev.preventDefault();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, pitLane.length]);
+
+  async function savePitLane() {
+    if (pitLane.length < 3) {
+      setMsg("Need at least 3 vertices");
+      return;
+    }
+    setBusy(true);
+    try {
+      await setTrackPitLane(id, pitLane);
+      setPitClosed(true);
+      setMsg(`Saved pit lane (${pitLane.length} vertices)`);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function saveSf() {
@@ -174,10 +220,48 @@ export default function TrackEditPage() {
               width="100%"
               viewBox={`0 0 ${W} ${H}`}
               onClick={handleSvgClick}
+              onDoubleClick={handleSvgDblClick}
               className="bg-[#0c0c0c] rounded cursor-crosshair"
               style={{ maxHeight: 620 }}
             >
               <path d={pathD} stroke="#a3a3a3" strokeWidth={1.5} fill="none" />
+              {/* Pit-lane polygon */}
+              {pitLane.length > 0 && (() => {
+                const pts = pitLane
+                  .map((p) => `${bounds.lonToX(p.lon).toFixed(1)},${bounds.latToY(p.lat).toFixed(1)}`)
+                  .join(" ");
+                if (pitClosed && pitLane.length >= 3) {
+                  return (
+                    <polygon
+                      points={pts}
+                      fill="#f97316"
+                      fillOpacity={0.3}
+                      stroke="#f97316"
+                      strokeWidth={2}
+                    />
+                  );
+                }
+                return (
+                  <>
+                    <polyline
+                      points={pts}
+                      fill="none"
+                      stroke="#f97316"
+                      strokeWidth={2}
+                      strokeDasharray="4 2"
+                    />
+                    {pitLane.map((p, i) => (
+                      <circle
+                        key={`pl-${i}`}
+                        cx={bounds.lonToX(p.lon)}
+                        cy={bounds.latToY(p.lat)}
+                        r={3.5}
+                        fill="#f97316"
+                      />
+                    ))}
+                  </>
+                );
+              })()}
               {/* S/F line */}
               {sfPoints.map((p, i) => (
                 <circle key={`sf-${i}`} cx={bounds.lonToX(p.lon)} cy={bounds.latToY(p.lat)} r={5} fill="#ef4444" />
@@ -237,7 +321,7 @@ export default function TrackEditPage() {
         <div className="space-y-3 text-sm">
           <Card>
             <CardContent className="p-4 space-y-3">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   variant={mode === "sf" ? "default" : "secondary"}
@@ -252,6 +336,13 @@ export default function TrackEditPage() {
                   disabled={splits.length >= 8}
                 >
                   Add split ({splits.length}/8)
+                </Button>
+                <Button
+                  size="sm"
+                  variant={mode === "pit" ? "default" : "secondary"}
+                  onClick={() => setMode("pit")}
+                >
+                  Pit lane
                 </Button>
               </div>
 
@@ -269,7 +360,7 @@ export default function TrackEditPage() {
                     </Button>
                   </div>
                 </div>
-              ) : (
+              ) : mode === "split" ? (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
                     Click two points to drop a split. Each split = 2 points. Up to 8 splits.
@@ -296,6 +387,40 @@ export default function TrackEditPage() {
                     >
                       Undo
                     </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Click to add polygon vertices. Double-click or press Enter to close. Save to persist.
+                  </p>
+                  <div className="text-xs text-muted-foreground">
+                    Vertices: {pitLane.length} {pitClosed ? "(closed)" : ""}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" onClick={savePitLane} disabled={busy || pitLane.length < 3}>
+                      Save pit lane
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => { setPitLane([]); setPitClosed(false); }}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => { setPitLane((p) => p.slice(0, -1)); setPitClosed(false); }}
+                      disabled={pitLane.length === 0}
+                    >
+                      Undo
+                    </Button>
+                    {pitLane.length >= 3 && !pitClosed && (
+                      <Button size="sm" variant="secondary" onClick={() => setPitClosed(true)}>
+                        Close polygon
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
