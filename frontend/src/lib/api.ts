@@ -275,6 +275,23 @@ export async function fetchDeltaT(
   return res.json();
 }
 
+export interface PredictiveData {
+  distance: number[];
+  delta_ms: number[];
+}
+
+export async function fetchPredictive(
+  sessionId: string,
+  refLap: number,
+  currentLap: number
+): Promise<PredictiveData> {
+  const res = await fetch(
+    `/api/sessions/${sessionId}/predictive?ref_lap=${refLap}&current_lap=${currentLap}`
+  );
+  if (!res.ok) throw new Error(`Failed to fetch predictive: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchCrossSessionDeltaT(
   ref: { session_id: string; lap: number },
   compare: { session_id: string; lap: number }
