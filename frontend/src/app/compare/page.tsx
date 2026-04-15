@@ -4,10 +4,13 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   fetchSession,
+  fetchTrack,
   fetchCrossSessionDeltaT,
   type SessionDetail,
   type DeltaTData,
+  type TrackData,
 } from "@/lib/api";
+import { TrackMap } from "@/components/track-map";
 
 export default function ComparePage() {
   const params = useSearchParams();
@@ -19,6 +22,8 @@ export default function ComparePage() {
   const [lapA, setLapA] = useState<number | null>(null);
   const [lapB, setLapB] = useState<number | null>(null);
   const [delta, setDelta] = useState<DeltaTData | null>(null);
+  const [trackA, setTrackA] = useState<TrackData | null>(null);
+  const [trackB, setTrackB] = useState<TrackData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,6 +32,8 @@ export default function ComparePage() {
   }, [a, b]);
 
   useEffect(() => {
+    if (a && lapA != null) fetchTrack(a, lapA).then(setTrackA).catch(() => setTrackA(null));
+    if (b && lapB != null) fetchTrack(b, lapB).then(setTrackB).catch(() => setTrackB(null));
     if (!a || !b || lapA == null || lapB == null) return;
     setError(null);
     fetchCrossSessionDeltaT({ session_id: a, lap: lapA }, { session_id: b, lap: lapB })
@@ -49,18 +56,8 @@ export default function ComparePage() {
     <div className="p-6 space-y-4 text-sm">
       <h1 className="text-lg font-semibold">Session compare</h1>
       <div className="grid grid-cols-2 gap-4">
-        <SidePane
-          label="Reference"
-          session={sessionA}
-          selectedLap={lapA}
-          onSelectLap={setLapA}
-        />
-        <SidePane
-          label="Compare"
-          session={sessionB}
-          selectedLap={lapB}
-          onSelectLap={setLapB}
-        />
+        <SidePane label="Reference" session={sessionA} selectedLap={lapA} onSelectLap={setLapA} track={trackA} />
+        <SidePane label="Compare" session={sessionB} selectedLap={lapB} onSelectLap={setLapB} track={trackB} />
       </div>
       <div>
         <h2 className="font-semibold mb-1">Delta-t</h2>
@@ -82,11 +79,13 @@ function SidePane({
   session,
   selectedLap,
   onSelectLap,
+  track,
 }: {
   label: string;
   session: SessionDetail | null;
   selectedLap: number | null;
   onSelectLap: (n: number) => void;
+  track: TrackData | null;
 }) {
   if (!session) return <div className="rounded border border-border p-3">Loading…</div>;
   const laps = session.laps.filter((l) => l.num > 0 && l.duration_ms > 0);
@@ -110,6 +109,9 @@ function SidePane({
           </button>
         ))}
       </div>
+      {track && track.lat.length > 0 && (
+        <TrackMap lat={track.lat} lon={track.lon} speed={track.speed} width={340} height={260} />
+      )}
     </div>
   );
 }

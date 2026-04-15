@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { uploadFile, type UploadResult } from "@/lib/api";
+import { uploadFile, fetchTrack, matchTrack, assignSession, type UploadResult } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -35,6 +35,19 @@ export default function UploadPage() {
       try {
         const res = await uploadFile(file);
         setResult(res);
+        // Auto-match against stored tracks (best-effort, non-blocking)
+        try {
+          const track = await fetchTrack(res.session_id);
+          if (track.lat.length > 0) {
+            const outline: number[][] = track.lat.map((la, i) => [la, track.lon[i]]);
+            const m = await matchTrack(outline);
+            if (m.matched && m.match) {
+              await assignSession(res.session_id, { track_id: m.match.id });
+            }
+          }
+        } catch {
+          /* ignore match failures */
+        }
         // Auto-redirect after a short delay
         setTimeout(() => {
           router.push(`/sessions/${res.session_id}`);
