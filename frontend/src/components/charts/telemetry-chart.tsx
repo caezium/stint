@@ -175,6 +175,12 @@ export function TelemetryChart({
       const lap = src.lap;
       const rd = lapDataMap.get(src.key);
       if (!rd || rd.rowCount === 0) continue;
+      // eslint-disable-next-line no-console
+      console.log("[telemetry-chart] " + src.label + " start_ms=" + lap.start_time_ms + " rowCount=" + rd.rowCount + " tc_first=" + JSON.stringify(Array.from(rd.timecodes.slice(0,5))) + " tc_last=" + JSON.stringify(Array.from(rd.timecodes.slice(-3))));
+      for (const [chName, vals] of Object.entries(rd.channels)) {
+        // eslint-disable-next-line no-console
+        console.log("[telemetry-chart]   " + chName + " first5=" + JSON.stringify(Array.from((vals as Float64Array).slice(0, 5))) + " last3=" + JSON.stringify(Array.from((vals as Float64Array).slice(-3))));
+      }
 
       let xValues: number[];
       const offsetMs = lap.start_time_ms;
@@ -243,6 +249,32 @@ export function TelemetryChart({
     }
 
     if (lapSeries.length === 0) return { data: null, options: null };
+
+    // Build distance→timecode reverse lookup for cursor positioning in distance mode.
+    // We use the first active lap's distance data to map distance values back to
+    // absolute timecodes so the track map cursor dot works correctly.
+    let distToMs: ((dist: number) => number) | null = null;
+    if (useDistance && activeLaps.length > 0) {
+      const firstSrc = activeLaps[0];
+      const dd = distDataMap.get(firstSrc.key);
+      if (dd && dd.timecodes.length > 1) {
+        const dArr = dd.distance_m;
+        const tArr = dd.timecodes; // lap-relative ms
+        const baseMs = firstSrc.lap.start_time_ms;
+        distToMs = (dist: number): number => {
+          // Binary search in dArr, then interpolate tArr
+          let lo = 0, hi = dArr.length - 1;
+          if (dist <= dArr[0]) return tArr[0] + baseMs;
+          if (dist >= dArr[hi]) return tArr[hi] + baseMs;
+          while (lo < hi - 1) {
+            const mid = (lo + hi) >> 1;
+            if (dArr[mid] <= dist) lo = mid; else hi = mid;
+          }
+          const frac = (dist - dArr[lo]) / (dArr[hi] - dArr[lo] || 1);
+          return Math.round(tArr[lo] + frac * (tArr[hi] - tArr[lo])) + baseMs;
+        };
+      }
+    }
 
     // All series must share the same x-axis. Since each lap is independently
     // normalized to start at 0, find the union of all x values.
@@ -341,7 +373,13 @@ export function TelemetryChart({
           (u: uPlot) => {
             const idx = u.cursor.idx;
             if (idx != null && idx >= 0 && idx < xArr.length) {
-              setCursorMs(xArr[idx] * 1000);
+              if (useDistance && distToMs) {
+                // xArr is meters — reverse-map to absolute timecode ms
+                setCursorMs(distToMs(xArr[idx]));
+              } else {
+                // xArr is seconds — convert to ms
+                setCursorMs(xArr[idx] * 1000);
+              }
             } else {
               setCursorMs(null);
             }

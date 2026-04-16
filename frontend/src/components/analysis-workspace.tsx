@@ -121,6 +121,24 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     } catch {}
   }, [xAxisMode]);
 
+  // GPS offset calibration (per-session, persisted in localStorage)
+  const [gpsOffset, setGpsOffset] = useState<{ lat: number; lon: number }>(() => {
+    if (typeof window === "undefined") return { lat: 0, lon: 0 };
+    try {
+      const saved = localStorage.getItem(`stint-gps-offset-${sessionId}`);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { lat: 0, lon: 0 };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `stint-gps-offset-${sessionId}`,
+        JSON.stringify(gpsOffset)
+      );
+    } catch {}
+  }, [gpsOffset, sessionId]);
+
   // Restore x-axis mode on mount
   useEffect(() => {
     try {
@@ -706,6 +724,8 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                     sfLine={sfLineForMap}
                     splitLines={splitsForMap}
                     interactive
+                    gpsOffset={gpsOffset}
+                    onGpsOffsetChange={setGpsOffset}
                   />
                 ) : (
                   <div className="h-full flex items-center justify-center text-xs text-muted-foreground">

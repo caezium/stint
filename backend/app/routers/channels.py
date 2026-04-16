@@ -144,7 +144,7 @@ async def get_channel(
         return FileResponse(
             path,
             media_type="application/vnd.apache.arrow.file",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "no-cache, must-revalidate"},
         )
 
     # Need to read and potentially filter
@@ -172,7 +172,7 @@ async def get_channel(
     return Response(
         content=sink.getvalue().to_pybytes(),
         media_type="application/vnd.apache.arrow.file",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 
@@ -239,7 +239,7 @@ async def get_resampled_channels(
     return Response(
         content=sink.getvalue().to_pybytes(),
         media_type="application/vnd.apache.arrow.file",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 
