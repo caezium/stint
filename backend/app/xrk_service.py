@@ -214,11 +214,35 @@ def get_resampled_lap_data(
 
     Uses libxrk's resample_to_channel() which performs proper interpolation
     (linear for continuous channels, forward-fill for discrete).
+
+    Lap bounds are read from the SQLite ``laps`` table (which reflects any
+    user-driven recomputation via track S/F line), and applied via
+    ``filter_by_time_range`` instead of libxrk's built-in ``filter_by_lap``.
+    The cache key includes those bounds so recomputed laps automatically
+    invalidate previously cached resamples.
     """
-    # Check for cached resampled file
+    # Read our recomputed lap bounds from SQLite (sync read inline).
+    import sqlite3
+    db_path = os.path.join(DATA_DIR, "telemetry.db")
+    bounds: Optional[tuple[int, int]] = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            "SELECT start_time_ms, end_time_ms FROM laps WHERE session_id=? AND num=?",
+            (session_id, lap_num),
+        )
+        row = cur.fetchone()
+        if row:
+            bounds = (int(row[0]), int(row[1]))
+        conn.close()
+    except Exception:
+        bounds = None
+
+    # Cache key includes lap bounds so recompute invalidates old caches.
+    bounds_tag = f"{bounds[0]}-{bounds[1]}" if bounds else "none"
     ch_hash = hashlib.md5(",".join(sorted(channel_names)).encode()).hexdigest()[:8]
     ref = (ref_channel or "auto").replace(" ", "_")
-    cache_key = f"resampled_L{lap_num}_{ref}_{ch_hash}.arrow"
+    cache_key = f"resampled_L{lap_num}_{bounds_tag}_{ref}_{ch_hash}.arrow"
     cache_path = os.path.join(CACHE_DIR, session_id, cache_key)
 
     if os.path.exists(cache_path):
@@ -232,8 +256,12 @@ def get_resampled_lap_data(
     with open(xrk_path, "rb") as f:
         log = aim_xrk(BytesIO(f.read()))
 
-    # Filter to lap, select channels, resample
-    lap_log = log.filter_by_lap(lap_num)
+    # Prefer recomputed bounds (from DB laps table) when available; otherwise
+    # fall back to libxrk's native lap definition.
+    if bounds is not None:
+        lap_log = log.filter_by_time_range(bounds[0], bounds[1])
+    else:
+        lap_log = log.filter_by_lap(lap_num)
 
     # Find available channels (some requested names may not exist)
     available = set(lap_log.channels.keys())

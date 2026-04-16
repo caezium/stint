@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo, lazy, Suspense } from "react";
 import { useCursorStore } from "@/stores/cursor-store";
 import {
   useUnitsStore,
@@ -8,6 +8,8 @@ import {
   sampleRamp,
   rampToCssGradient,
 } from "@/stores/units-store";
+
+export type MapViewMode = "canvas" | "satellite" | "street";
 
 export interface LapTrace {
   lapNum: number;
@@ -39,6 +41,10 @@ interface TrackMapProps {
   interactive?: boolean;
   sfLine?: { lat1: number; lon1: number; lat2: number; lon2: number } | null;
   splitLines?: { lat1: number; lon1: number; lat2: number; lon2: number }[];
+  /** GPS lat/lon offset for calibration (degrees) */
+  gpsOffset?: { lat: number; lon: number };
+  /** Called when user changes the GPS offset */
+  onGpsOffsetChange?: (offset: { lat: number; lon: number }) => void;
 }
 
 interface CoordTransform {
@@ -140,6 +146,8 @@ export function TrackMap({
   interactive = false,
   sfLine = null,
   splitLines = [],
+  gpsOffset,
+  onGpsOffsetChange,
 }: TrackMapProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -149,27 +157,48 @@ export function TrackMap({
   const colormap = useUnitsStore((s) => s.colormap);
   const sequentialRamp = COLORMAP_RAMPS[colormap];
 
+  const [mapMode, setMapMode] = useState<MapViewMode>("canvas");
+  const [showOffsetControls, setShowOffsetControls] = useState(false);
+  const [localOffset, setLocalOffset] = useState<{ lat: number; lon: number }>(
+    gpsOffset ?? { lat: 0, lon: 0 }
+  );
+
+  // Sync incoming offset prop
+  useEffect(() => {
+    if (gpsOffset) setLocalOffset(gpsOffset);
+  }, [gpsOffset]);
+
   const [box, setBox] = useState<{ w: number; h: number }>({
     w: width ?? 300,
     h: height ?? 240,
   });
 
-  // Normalize inputs into a laps array
-  const traces: LapTrace[] =
-    laps && laps.length > 0
-      ? laps
-      : lat && lon && lat.length > 1
-        ? [
-            {
-              lapNum: 0,
-              lat,
-              lon,
-              timecodes,
-              values: speed,
-              color: "#ef4444",
-            },
-          ]
-        : [];
+  // Normalize inputs into a laps array, applying GPS offset
+  const oLat = localOffset.lat;
+  const oLon = localOffset.lon;
+  const traces: LapTrace[] = useMemo(() => {
+    const raw: LapTrace[] =
+      laps && laps.length > 0
+        ? laps
+        : lat && lon && lat.length > 1
+          ? [
+              {
+                lapNum: 0,
+                lat,
+                lon,
+                timecodes,
+                values: speed,
+                color: "#ef4444",
+              },
+            ]
+          : [];
+    if (oLat === 0 && oLon === 0) return raw;
+    return raw.map((tr) => ({
+      ...tr,
+      lat: tr.lat.map((v) => v + oLat),
+      lon: tr.lon.map((v) => v + oLon),
+    }));
+  }, [laps, lat, lon, timecodes, speed, oLat, oLon]);
 
   // ResizeObserver for responsive canvas
   useEffect(() => {
@@ -379,6 +408,19 @@ export function TrackMap({
     [interactive, traces, setCursorMs]
   );
 
+  // GPS offset nudge helpers
+  const NUDGE_STEP = 0.00003; // ~3 meters
+  const nudge = (axis: "lat" | "lon", dir: 1 | -1) => {
+    const next = { ...localOffset, [axis]: localOffset[axis] + dir * NUDGE_STEP };
+    setLocalOffset(next);
+    onGpsOffsetChange?.(next);
+  };
+  const resetOffset = () => {
+    const zero = { lat: 0, lon: 0 };
+    setLocalOffset(zero);
+    onGpsOffsetChange?.(zero);
+  };
+
   if (traces.length === 0) {
     return (
       <div
@@ -405,6 +447,119 @@ export function TrackMap({
     legendMax = mx;
   }
 
+  // Mode toggle buttons (top-right corner)
+  const modeToggle = (
+    <div className="absolute top-1 right-1 z-[500] flex gap-0.5 bg-black/60 rounded text-[9px]">
+      {(["canvas", "satellite", "street"] as MapViewMode[]).map((m) => (
+        <button
+          key={m}
+          onClick={() => setMapMode(m)}
+          className={`px-1.5 py-0.5 rounded transition-colors capitalize ${
+            mapMode === m
+              ? "bg-white/20 text-white"
+              : "text-white/50 hover:text-white/80"
+          }`}
+        >
+          {m === "canvas" ? "Plain" : m === "satellite" ? "Sat" : "Map"}
+        </button>
+      ))}
+      <button
+        onClick={() => setShowOffsetControls((v) => !v)}
+        className={`px-1.5 py-0.5 rounded transition-colors ${
+          showOffsetControls ? "bg-white/20 text-white" : "text-white/50 hover:text-white/80"
+        }`}
+        title="GPS offset calibration"
+      >
+        ⊕
+      </button>
+    </div>
+  );
+
+  // GPS offset controls
+  const offsetControls = showOffsetControls && (
+    <div className="absolute top-7 right-1 z-[500] bg-black/70 rounded p-1.5 text-[9px] text-white/80 flex flex-col items-center gap-1">
+      <span className="text-white/50 text-[8px]">GPS Offset</span>
+      <button onClick={() => nudge("lat", 1)} className="hover:text-white px-1">▲ N</button>
+      <div className="flex items-center gap-1">
+        <button onClick={() => nudge("lon", -1)} className="hover:text-white px-1">◀ W</button>
+        <button onClick={resetOffset} className="hover:text-white px-1 text-red-400" title="Reset offset">✕</button>
+        <button onClick={() => nudge("lon", 1)} className="hover:text-white px-1">E ▶</button>
+      </div>
+      <button onClick={() => nudge("lat", -1)} className="hover:text-white px-1">▼ S</button>
+      <span className="text-[7px] text-white/40 mt-0.5">
+        {localOffset.lat !== 0 || localOffset.lon !== 0
+          ? `Δ ${(localOffset.lat * 111111).toFixed(1)}m N, ${(localOffset.lon * 111111 * Math.cos((traces[0].lat[0] * Math.PI) / 180)).toFixed(1)}m E`
+          : "No offset"}
+      </span>
+    </div>
+  );
+
+  // Shared value-gradient legend (single-trace with values)
+  const valueLegend =
+    singleWithValues && legendMin != null && legendMax != null
+      ? (() => {
+          const signed = legendMin < 0 && legendMax > 0;
+          const bound = Math.max(Math.abs(legendMin), Math.abs(legendMax));
+          const lo = signed ? -bound : legendMin;
+          const hi = signed ? bound : legendMax;
+          const fmt = (v: number) =>
+            valueUnits === "m" ? Math.round(v).toString() : v.toFixed(1);
+          const gradient = signed
+            ? rampToCssGradient(DIVERGING_RAMP)
+            : rampToCssGradient(sequentialRamp);
+          return (
+            <div className="absolute bottom-1 left-1 right-1 z-[500] flex items-center gap-1.5 text-[10px] text-white/90 bg-black/50 rounded px-1.5 py-0.5">
+              <span>{fmt(lo)}{valueUnits}</span>
+              <div className="relative flex-1 h-1.5 rounded-sm" style={{ background: gradient }}>
+                {signed && (
+                  <div className="absolute top-[-2px] bottom-[-2px] left-1/2 w-px bg-white/60" />
+                )}
+              </div>
+              <span>{fmt(hi)}{valueUnits}</span>
+              <span className="ml-1 opacity-60">{valueLabel}</span>
+            </div>
+          );
+        })()
+      : null;
+
+  // Leaflet tile-based view
+  if (mapMode !== "canvas") {
+    return (
+      <div
+        ref={wrapperRef}
+        className="relative rounded-lg overflow-hidden w-full h-full"
+        style={width != null && height != null ? { width, height } : undefined}
+      >
+        <Suspense fallback={<div className="w-full h-full bg-[#0c0c0c]" />}>
+          <AnalysisLeafletMap
+            traces={traces}
+            cursorMs={cursorMs}
+            setCursorMs={interactive ? setCursorMs : undefined}
+            sfLine={sfLine}
+            splitLines={splitLines}
+            tileMode={mapMode}
+            width="100%"
+            height="100%"
+          />
+        </Suspense>
+        {modeToggle}
+        {offsetControls}
+        {valueLegend}
+        {!singleWithValues && traces.length > 0 && (
+          <div className="absolute bottom-1 left-1 z-[500] flex flex-wrap gap-1.5 text-[10px] bg-black/40 rounded px-1.5 py-0.5">
+            {traces.map((tr) => (
+              <div key={tr.lapNum} className="flex items-center gap-1">
+                <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: tr.color }} />
+                <span className="text-white/80">{tr.label ?? `L${tr.lapNum}`}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Canvas-based view (original)
   return (
     <div
       ref={wrapperRef}
@@ -421,6 +576,9 @@ export function TrackMap({
         }}
         onClick={handleClick}
       />
+
+      {modeToggle}
+      {offsetControls}
 
       {/* Legend */}
       {singleWithValues && legendMin != null && legendMax != null && (() => {
@@ -465,3 +623,8 @@ export function TrackMap({
     </div>
   );
 }
+
+
+// ─── Leaflet-based analysis map (lazy loaded) ───────────────────────────
+
+const AnalysisLeafletMap = lazy(() => import("./track-map-analysis-leaflet"));
