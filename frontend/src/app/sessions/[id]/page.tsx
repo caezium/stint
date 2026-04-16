@@ -22,6 +22,10 @@ import {
   type Track,
 } from "@/lib/api";
 import { LogSheetPanel } from "@/components/log-sheet-panel";
+import { AnomalyPanel } from "@/components/anomaly-panel";
+import { DebriefPanel } from "@/components/debrief-panel";
+import { ChatPanel } from "@/components/chat-panel";
+import { ChatToggleButton } from "@/components/chat-toggle";
 import { formatLapTime, CHANNEL_CATEGORIES } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -183,10 +187,15 @@ export default function SessionDetailPage() {
             {session.log_time && ` \u2022 ${session.log_time}`}
           </p>
         </div>
-        <Link href={`/sessions/${id}/analysis`}>
-          <Button>Open Analysis</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <ChatToggleButton />
+          <Link href={`/sessions/${id}/analysis`}>
+            <Button>Open Analysis</Button>
+          </Link>
+        </div>
       </div>
+
+      <ChatPanel sessionId={id} />
 
       {/* Metadata cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
@@ -275,6 +284,11 @@ export default function SessionDetailPage() {
           )}
         </Card>
       )}
+
+      <div className="mb-6 space-y-4">
+        <AnomalyPanel sessionId={id} />
+        <DebriefPanel sessionId={id} />
+      </div>
 
       <LogSheetPanel sessionId={id} />
 
