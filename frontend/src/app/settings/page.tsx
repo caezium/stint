@@ -147,23 +147,33 @@ function GeneralSection() {
 
 // ---------- Integrations ----------
 
-function IntegrationsSection() {
+function ApiKeyRow({
+  settingKey,
+  label,
+  description,
+  placeholder,
+}: {
+  settingKey: string;
+  label: string;
+  description: string;
+  placeholder: string;
+}) {
   const [apiKey, setApiKey] = useState("");
   const [show, setShow] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetchSetting("openweather_api_key")
+    fetchSetting(settingKey)
       .then((v) => setApiKey(v || ""))
       .catch(() => setApiKey(""));
-  }, []);
+  }, [settingKey]);
 
   async function save() {
     setBusy(true);
     setMsg(null);
     try {
-      await saveSetting("openweather_api_key", apiKey);
+      await saveSetting(settingKey, apiKey);
       setMsg("Saved");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Failed");
@@ -175,18 +185,15 @@ function IntegrationsSection() {
   return (
     <div className="space-y-2">
       <div>
-        <h3 className="text-sm font-medium">OpenWeather API key</h3>
-        <p className="text-xs text-muted-foreground mt-1">
-          Used to backfill historical weather for sessions that have a log
-          date. Requires a One Call 3.0 subscription.
-        </p>
+        <h3 className="text-sm font-medium">{label}</h3>
+        <p className="text-xs text-muted-foreground mt-1">{description}</p>
       </div>
       <div className="flex items-center gap-2">
         <Input
           type={show ? "text" : "password"}
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          placeholder={placeholder}
           autoComplete="off"
           spellCheck={false}
         />
@@ -203,10 +210,27 @@ function IntegrationsSection() {
         <Button size="sm" onClick={save} disabled={busy}>
           Save
         </Button>
-        {msg && (
-          <span className="text-xs text-muted-foreground">{msg}</span>
-        )}
+        {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
       </div>
+    </div>
+  );
+}
+
+function IntegrationsSection() {
+  return (
+    <div className="space-y-6">
+      <ApiKeyRow
+        settingKey="openweather_api_key"
+        label="OpenWeather API key"
+        description="Used to backfill historical weather for sessions that have a log date. Requires a One Call 3.0 subscription."
+        placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      />
+      <ApiKeyRow
+        settingKey="openrouter_api_key"
+        label="OpenRouter API key"
+        description="Powers the 'Ask your data' chat on each session. Routes to Claude Sonnet 4.5 by default. Get a key at openrouter.ai/keys. Can also be set via the OPENROUTER_API_KEY env var."
+        placeholder="sk-or-v1-..."
+      />
     </div>
   );
 }

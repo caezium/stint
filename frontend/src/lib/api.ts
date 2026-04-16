@@ -160,7 +160,7 @@ export async function fetchResampledData(
           lap: String(lap),
         });
         if (refChannel) params.set("ref_channel", refChannel);
-        const res = await fetch(`/api/sessions/${sessionId}/resampled?${params}`);
+        const res = await fetch(`/api/sessions/${sessionId}/resampled?${params}`, { cache: 'no-store' });
         if (!res.ok) {
           throw new Error(
             `Failed to fetch resampled data: ${res.status} ${await res.text().catch(() => "")}`
@@ -900,6 +900,282 @@ export async function fetchSmartCollectionSessions(id: number): Promise<Session[
   const res = await fetch(`/api/collections/${id}/sessions`);
   if (!res.ok) throw new Error(`Failed: ${res.status}`);
   return res.json();
+}
+
+// ---- Anomalies (Phase 1: Stint AI — Anomaly Watchdog) ----
+
+export type AnomalySeverity = "critical" | "warning" | "info";
+
+export interface Anomaly {
+  id: number;
+  type: string;
+  severity: AnomalySeverity;
+  lap_num: number | null;
+  channel: string | null;
+  message: string;
+  metric_value: number | null;
+  created_at?: string;
+}
+
+export interface AnomalyCounts {
+  critical: number;
+  warning: number;
+  info: number;
+}
+
+export interface AnomalyResponse {
+  counts: AnomalyCounts;
+  items: Anomaly[];
+}
+
+export async function fetchAnomalies(sessionId: string): Promise<AnomalyResponse> {
+  const res = await fetch(`/api/sessions/${sessionId}/anomalies?_t=${Date.now()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to fetch anomalies: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAnomalySummary(sessionId: string): Promise<AnomalyCounts> {
+  const res = await fetch(`/api/sessions/${sessionId}/anomalies/summary?_t=${Date.now()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to fetch anomaly summary: ${res.status}`);
+  return res.json();
+}
+
+export async function recomputeAnomalies(sessionId: string): Promise<AnomalyResponse> {
+  const res = await fetch(`/api/sessions/${sessionId}/anomalies/recompute`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to recompute anomalies: ${res.status}`);
+  const data = await res.json();
+  // /recompute returns { count, items }; normalize to AnomalyResponse shape
+  const counts: AnomalyCounts = { critical: 0, warning: 0, info: 0 };
+  for (const item of data.items as Anomaly[]) {
+    counts[item.severity] = (counts[item.severity] ?? 0) + 1;
+  }
+  return { counts, items: data.items };
+}
+
+// ---- Auto-Debrief (Phase 2: Stint AI) ----
+
+export interface DebriefLapConsistency {
+  lap_count: number;
+  best_ms: number | null;
+  mean_ms: number | null;
+  stddev_ms: number | null;
+  coefficient_of_variation: number | null;
+  best_streak: number;
+  clean_lap_count: number;
+}
+
+export interface DebriefSectorConsistency {
+  sector_num: number;
+  best_ms: number;
+  mean_ms: number | null;
+  stddev_ms: number | null;
+}
+
+export interface DebriefCornerPerformance {
+  sector_num: number;
+  best_ms: number;
+  mean_ms: number;
+  stddev_ms: number;
+  delta_to_best_pct: number;
+  cov_pct: number;
+  score: number;
+}
+
+export interface DebriefWeatherCorrelation {
+  lap_trend_slope_ms_per_lap: number;
+  lap_trend_r: number;
+  insight: string;
+  weather_context: {
+    weather: string;
+    track_temp: number | null;
+    air_temp: number | null;
+  };
+}
+
+export interface DebriefDrivingFingerprint {
+  reference_lap: number;
+  throttle_smoothness?: number;
+  braking_aggressiveness?: number;
+  max_brake?: number;
+  steering_smoothness?: number;
+}
+
+export interface DebriefMeta {
+  driver: string;
+  vehicle: string;
+  venue: string;
+  log_date: string;
+  lap_count: number;
+  best_lap_ms: number | null;
+}
+
+export interface Debrief {
+  session_id: string;
+  meta: DebriefMeta;
+  lap_consistency: DebriefLapConsistency;
+  sector_consistency: DebriefSectorConsistency[];
+  corner_performance: DebriefCornerPerformance[];
+  weather_correlation: DebriefWeatherCorrelation | null;
+  driving_fingerprint: DebriefDrivingFingerprint | null;
+  _generated_at?: string;
+}
+
+export async function fetchDebrief(sessionId: string): Promise<Debrief> {
+  const res = await fetch(`/api/sessions/${sessionId}/debrief?_t=${Date.now()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to fetch debrief: ${res.status}`);
+  return res.json();
+}
+
+export async function recomputeDebrief(sessionId: string): Promise<Debrief> {
+  const res = await fetch(`/api/sessions/${sessionId}/debrief/recompute`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to recompute debrief: ${res.status}`);
+  return res.json();
+}
+
+// ---- Chat (Phase 3: Ask Your Data) ----
+
+export interface ChatConversation {
+  id: number;
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+export type ChatRole = "user" | "assistant" | "tool";
+
+export interface ChatToolCall {
+  tool_use_id: string;
+  name: string;
+  input: Record<string, unknown>;
+  output?: unknown;
+  error?: string;
+}
+
+export interface ChatMessage {
+  id?: number;
+  role: ChatRole;
+  text?: string;
+  tool_calls?: ChatToolCall[];
+  created_at?: string;
+}
+
+export async function createChatConversation(
+  sessionId: string,
+  title = "",
+): Promise<ChatConversation> {
+  const res = await fetch("/api/chat/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, title }),
+  });
+  if (!res.ok) throw new Error(`Failed to create conversation: ${res.status}`);
+  return res.json();
+}
+
+export async function listChatConversations(
+  sessionId: string,
+): Promise<ChatConversation[]> {
+  const res = await fetch(
+    `/api/chat/conversations?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  if (!res.ok) throw new Error(`Failed to list conversations: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchChatConversation(
+  conversationId: number,
+): Promise<{ conversation: ChatConversation; messages: ChatMessage[] }> {
+  const res = await fetch(`/api/chat/conversations/${conversationId}`);
+  if (!res.ok) throw new Error(`Failed to fetch conversation: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteChatConversation(conversationId: number): Promise<void> {
+  const res = await fetch(`/api/chat/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`Failed to delete conversation: ${res.status}`);
+}
+
+/**
+ * Stream a chat response. Server-sent events deliver progressive deltas as
+ * JSON lines. The callback receives each parsed event — the caller is
+ * responsible for appending text, displaying tool calls, etc.
+ */
+export interface ChatStreamEvent {
+  type:
+    | "text_delta"
+    | "tool_use"
+    | "tool_result"
+    | "message_complete"
+    | "error"
+    | "status";
+  delta?: string;
+  tool_use_id?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  tool_output?: unknown;
+  error?: string;
+  message_id?: number;
+  status?: string;
+}
+
+export async function streamChatMessage(
+  conversationId: number,
+  userMessage: string,
+  onEvent: (evt: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch("/api/chat/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      message: userMessage,
+    }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Chat stream failed: ${res.status} ${detail}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      try {
+        const parsed = JSON.parse(payload) as ChatStreamEvent;
+        onEvent(parsed);
+      } catch {
+        // ignore malformed line
+      }
+    }
+  }
 }
 
 // ---- Track overlay ----

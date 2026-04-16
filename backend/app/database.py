@@ -194,6 +194,63 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Anomalies (populated by backend/app/anomalies.py after upload)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS anomalies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            lap_num INTEGER,
+            channel TEXT,
+            message TEXT NOT NULL,
+            metric_value REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_anomalies_session ON anomalies(session_id)"
+    )
+
+    # Debriefs cache (populated by backend/app/debrief.py after upload)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS debriefs (
+            session_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            generated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Chat conversations (Phase 3: Ask Your Data)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS chat_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_conv_session ON chat_conversations(session_id)"
+    )
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages(conversation_id)"
+    )
+
 
 async def init_db():
     db = await get_db()

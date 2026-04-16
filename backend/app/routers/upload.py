@@ -132,6 +132,21 @@ async def upload_file(file: UploadFile):
     finally:
         await db.close()
 
+    # Run anomaly detection. Non-fatal: upload must succeed even if detection fails.
+    try:
+        from ..anomalies import detect_session_anomalies
+        await detect_session_anomalies(result["session_id"])
+    except Exception as e:
+        # Swallow — anomalies are an additive signal, not core upload data.
+        print(f"[anomalies] detection failed for {result['session_id']}: {e}")
+
+    # Generate auto-debrief. Non-fatal.
+    try:
+        from ..debrief import generate_debrief
+        await generate_debrief(result["session_id"])
+    except Exception as e:
+        print(f"[debrief] generation failed for {result['session_id']}: {e}")
+
     # Try to auto-match a track and, if it has an S/F line, apply it immediately.
     auto_track_applied = None
     try:

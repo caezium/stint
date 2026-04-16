@@ -23,6 +23,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { AnomalyBadge } from "@/components/anomaly-badge";
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -269,6 +270,9 @@ export default function SessionsPage() {
                   <Badge variant="secondary" className="ml-2 shrink-0 text-xs">
                     {session.lap_count} laps
                   </Badge>
+                </div>
+                <div className="mb-2">
+                  <AnomalyBadge sessionId={session.id} />
                 </div>
                 <div className="space-y-1.5 text-sm text-muted-foreground">
                   <div className="flex justify-between">
