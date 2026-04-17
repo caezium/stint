@@ -23,14 +23,27 @@ SAFE_FUNCTIONS = {
     "sin": np.sin,
     "cos": np.cos,
     "tan": np.tan,
+    "asin": np.arcsin,
+    "acos": np.arccos,
+    "atan": np.arctan,
+    "atan2": np.arctan2,
     "log": np.log,
     "log10": np.log10,
+    "log2": np.log2,
     "exp": np.exp,
+    "sign": np.sign,
+    "floor": np.floor,
+    "ceil": np.ceil,
+    "round": np.round,
     "min": np.minimum,
     "max": np.maximum,
     "clip": np.clip,
+    # Rolling helpers — accept scalar window size
+    "diff": np.diff,
     "pi": math.pi,
+    "e": math.e,
 }
+SAFE_FUNCTION_NAMES = set(SAFE_FUNCTIONS.keys())
 
 
 class MathChannelRequest(BaseModel):
@@ -39,13 +52,30 @@ class MathChannelRequest(BaseModel):
     units: str = ""
 
 
+def _normalize_formula(formula: str, channel_names: list[str]) -> str:
+    """Replace channel names containing spaces with their underscore variant,
+    and `^` with `**`. Longer names are replaced first so we don't half-match
+    (e.g. `GPS Speed Accuracy` before `GPS Speed`).
+    """
+    formula = formula.replace("^", "**")
+    spaced = sorted(
+        (n for n in channel_names if " " in n or "/" in n),
+        key=len,
+        reverse=True,
+    )
+    for name in spaced:
+        safe = name.replace(" ", "_").replace("/", "_")
+        formula = formula.replace(name, safe)
+    return formula
+
+
 def _safe_eval_formula(formula: str, channel_data: dict[str, np.ndarray]) -> np.ndarray:
     """
     Safely evaluate a math formula against channel data using AST parsing.
     Only allows math operations, no arbitrary code execution.
     """
-    # Replace ^ with ** for exponentiation
-    formula = formula.replace("^", "**")
+    # Pre-process: spaces → underscores for channel names, ^ → **
+    formula = _normalize_formula(formula, list(channel_data.keys()))
 
     # Parse AST and validate
     try:
@@ -81,11 +111,26 @@ def _validate_ast(node):
         ast.Constant, ast.Attribute, ast.Subscript, ast.Index,
         ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
         ast.FloorDiv, ast.USub, ast.UAdd,
-        ast.Compare, ast.Gt, ast.Lt, ast.GtE, ast.LtE, ast.Eq,
+        ast.Compare, ast.Gt, ast.Lt, ast.GtE, ast.LtE, ast.Eq, ast.NotEq,
         ast.BoolOp, ast.And, ast.Or, ast.IfExp,
+        # Expression contexts — harmless markers on Name/Attribute/Subscript.
+        # `Load` is the only one we'll actually see here since we parse in
+        # mode="eval"; Store/Del would require a stmt which eval mode rejects.
+        ast.Load, ast.Store, ast.Del,
+        # Tuple for slicing like x[a:b]
+        ast.Tuple, ast.Slice,
     )
     if not isinstance(node, allowed_types):
         raise ValueError(f"Unsafe operation: {type(node).__name__}")
+    # Disallow calls to anything that isn't a plain name we whitelist later.
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Only direct function calls are allowed")
+        if node.func.id not in SAFE_FUNCTION_NAMES:
+            raise ValueError(f"Function '{node.func.id}' is not allowed")
+    # Prevent attribute drilling (e.g. ().__class__.__bases__…).
+    if isinstance(node, ast.Attribute):
+        raise ValueError("Attribute access is not allowed")
     for child in ast.iter_child_nodes(node):
         _validate_ast(child)
 
@@ -108,8 +153,11 @@ async def create_math_channel(session_id: str, req: MathChannelRequest):
     finally:
         await db.close()
 
-    # Find referenced channels in formula
-    formula_normalized = req.formula.replace("^", "**")
+    # Find referenced channels in formula (against the same normalized form
+    # that _safe_eval_formula will compile, so a spaced channel name like
+    # "GPS Speed" matches whether the LLM passed it with a space or an
+    # underscore).
+    formula_normalized = _normalize_formula(req.formula, all_channels)
     referenced = []
     for ch in all_channels:
         safe = ch.replace(" ", "_").replace("/", "_")
@@ -165,6 +213,17 @@ async def create_math_channel(session_id: str, req: MathChannelRequest):
             continue
 
         tc = lap_table.column("timecodes")
+        n_ts = len(tc)
+        n_r = len(lap_result)
+        if n_r != n_ts:
+            # Pad or truncate to match. `diff` loses one sample at the front;
+            # repeat the first to preserve alignment with the rest.
+            if n_r == n_ts - 1:
+                lap_result = np.concatenate([[lap_result[0]], lap_result]) if n_r else np.zeros(n_ts)
+            elif n_r > n_ts:
+                lap_result = lap_result[:n_ts]
+            else:
+                lap_result = np.concatenate([lap_result, np.zeros(n_ts - n_r)])
 
         # Save as Arrow IPC
         math_table = pa.table({
