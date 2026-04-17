@@ -22,6 +22,11 @@ import {
 import { fetchResampledData, fetchDistance, type ResampledData, type DistanceData } from "@/lib/api";
 import type uPlot from "uplot";
 import type { Lap } from "@/lib/api";
+import { useChatStore } from "@/stores/chat-store";
+import {
+  ChartContextMenu,
+  type ChartContextMenuState,
+} from "@/components/chart-context-menu";
 
 interface TelemetryChartProps {
   channels: string[];
@@ -498,6 +503,78 @@ export function TelemetryChart({
     }
   }, [setZoomRange]);
 
+  // ---- T3.1b — right-click context menu ---------------------------------
+  const setChatOpen = useChatStore((s) => s.setOpen);
+  const setPendingPrompt = useChatStore((s) => s.setPendingPrompt);
+  const [menu, setMenu] = useState<ChartContextMenuState | null>(null);
+
+  const onContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const chart = chartRef.current;
+      const container = containerRef.current;
+      if (!chart || !container) return;
+      e.preventDefault();
+
+      // Translate event coords → chart x value
+      const rect = container.getBoundingClientRect();
+      const xPx = e.clientX - rect.left - chart.bbox.left / window.devicePixelRatio;
+      let xVal: number | null = null;
+      try {
+        xVal = chart.posToVal(xPx, "x");
+      } catch {
+        xVal = null;
+      }
+      if (!Number.isFinite(xVal)) xVal = null;
+
+      const useDistance = xAxisMode === "distance";
+      const distLabel =
+        xVal != null
+          ? useDistance
+            ? `${Math.round(xVal)} m`
+            : `${xVal.toFixed(2)} s`
+          : "this point";
+      const lapNum = refLap?.num;
+      const channel = channels[0];
+
+      const items = [
+        {
+          label: "Ask Stint about this point",
+          icon: "chat" as const,
+          onSelect: () => {
+            const parts: string[] = [];
+            if (lapNum != null) parts.push(`On lap ${lapNum}`);
+            if (xVal != null) parts.push(`at ${distLabel}`);
+            const ask = `${parts.join(" ")}, what's happening with ${channel}?`.trim();
+            setPendingPrompt(ask);
+            setChatOpen(true);
+          },
+        },
+        {
+          label: "Set as cursor",
+          icon: "cursor" as const,
+          onSelect: () => {
+            if (xVal == null) return;
+            // Cursor store expects ms (lap-relative). When in time mode, xVal
+            // is seconds. Distance mode requires distToMs which lives in the
+            // memo above — fall back to nearest-index lookup via uPlot.
+            if (useDistance) {
+              const idx = chart.cursor.idx;
+              if (idx != null) {
+                // Nudge cursor by triggering the existing setCursor hook
+                chart.setCursor({ left: e.clientX - rect.left, top: 0 });
+              }
+            } else {
+              setCursorMs(xVal * 1000);
+            }
+          },
+        },
+      ];
+
+      setMenu({ x: e.clientX, y: e.clientY, items });
+    },
+    [xAxisMode, refLap?.num, channels, setPendingPrompt, setChatOpen, setCursorMs],
+  );
+
   if (loading && lapDataMap.size === 0) {
     return (
       <div
@@ -526,6 +603,7 @@ export function TelemetryChart({
     <div className="relative">
       <div
         ref={containerRef}
+        onContextMenu={onContextMenu}
         className="w-full bg-[#0c0c0c] rounded-lg overflow-hidden"
         style={{ minHeight: height }}
       />
@@ -537,6 +615,7 @@ export function TelemetryChart({
           Reset Zoom
         </button>
       )}
+      <ChartContextMenu state={menu} onClose={() => setMenu(null)} />
     </div>
   );
 }
