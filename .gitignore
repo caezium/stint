@@ -43,3 +43,7 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local-only Claude Code config
+.claude/
+plans/
