@@ -11,9 +11,15 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { EvidenceLink } from "@/components/evidence-link";
 
 interface Props {
   sessionId: string;
+  /**
+   * Default collapsed state when there are no critical anomalies. When
+   * `counts.critical > 0`, the panel always renders expanded regardless.
+   */
+  defaultCollapsed?: boolean;
 }
 
 const SEVERITY_ORDER: AnomalySeverity[] = ["critical", "warning", "info"];
@@ -46,11 +52,17 @@ function severityLabel(severity: AnomalySeverity): { label: string; variant: "de
   }
 }
 
-export function AnomalyPanel({ sessionId }: Props) {
+export function AnomalyPanel({ sessionId, defaultCollapsed = false }: Props) {
   const [data, setData] = useState<AnomalyResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recomputing, setRecomputing] = useState(false);
+  const [expanded, setExpanded] = useState(!defaultCollapsed);
+
+  // Auto-expand when any critical anomaly is present.
+  useEffect(() => {
+    if (data && data.counts.critical > 0) setExpanded(true);
+  }, [data?.counts.critical]);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,29 +135,39 @@ export function AnomalyPanel({ sessionId }: Props) {
         )}
 
         {!loading && !error && data && total > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {data.counts.critical > 0 && (
-              <Badge variant="destructive" className="text-xs">
-                {data.counts.critical} critical
-              </Badge>
-            )}
-            {data.counts.warning > 0 && (
-              <Badge
-                variant="outline"
-                className="text-xs border-amber-500/50 text-amber-400"
-              >
-                {data.counts.warning} warning{data.counts.warning > 1 ? "s" : ""}
-              </Badge>
-            )}
-            {data.counts.info > 0 && (
-              <Badge variant="secondary" className="text-xs">
-                {data.counts.info} note{data.counts.info > 1 ? "s" : ""}
-              </Badge>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="w-full flex items-center gap-2 text-left text-xs"
+            aria-expanded={expanded}
+          >
+            <div className="flex flex-wrap gap-2 flex-1">
+              {data.counts.critical > 0 && (
+                <Badge variant="destructive" className="text-xs">
+                  {data.counts.critical} critical
+                </Badge>
+              )}
+              {data.counts.warning > 0 && (
+                <Badge
+                  variant="outline"
+                  className="text-xs border-amber-500/50 text-amber-400"
+                >
+                  {data.counts.warning} warning{data.counts.warning > 1 ? "s" : ""}
+                </Badge>
+              )}
+              {data.counts.info > 0 && (
+                <Badge variant="secondary" className="text-xs">
+                  {data.counts.info} note{data.counts.info > 1 ? "s" : ""}
+                </Badge>
+              )}
+            </div>
+            <span className="text-muted-foreground/70">
+              {expanded ? "Hide" : `Show ${total}`}
+            </span>
+          </button>
         )}
 
-        {!loading && !error && data && total > 0 && (
+        {!loading && !error && data && total > 0 && expanded && (
           <div className="space-y-1.5 pt-1">
             {SEVERITY_ORDER.flatMap((sev) =>
               data.items
@@ -171,7 +193,20 @@ export function AnomalyPanel({ sessionId }: Props) {
                             </Badge>
                             <span className="font-mono">{a.type}</span>
                             {a.channel && <span>· {a.channel}</span>}
-                            {a.lap_num != null && <span>· lap {a.lap_num}</span>}
+                            {a.lap_num != null && (
+                              <span>
+                                ·{" "}
+                                <EvidenceLink
+                                  sessionId={sessionId}
+                                  lapNum={a.lap_num}
+                                  distancePct={a.distance_pct ?? null}
+                                >
+                                  {a.distance_pct != null
+                                    ? `lap ${a.lap_num} · ${a.distance_pct.toFixed(0)}%`
+                                    : `lap ${a.lap_num}`}
+                                </EvidenceLink>
+                              </span>
+                            )}
                             {a.metric_value != null && (
                               <span>· {formatMetric(a.type, a.metric_value)}</span>
                             )}
