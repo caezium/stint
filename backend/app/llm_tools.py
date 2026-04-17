@@ -137,6 +137,136 @@ TOOL_SCHEMAS: list[dict] = [
             "required": ["lap_num", "channel"],
         },
     ),
+    _fn(
+        "get_coaching_points",
+        (
+            "Return prescriptive coaching points (braking-on distance, apex speed, "
+            "throttle pickup) per (lap, sector) for the current session, plus "
+            "deltas vs the per-sector best lap. Use this when the user asks how "
+            "to be faster or where they're losing time within a corner."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "lap_num": {"type": "integer"},
+                "sector_num": {"type": "integer"},
+            },
+            "required": [],
+        },
+    ),
+    _fn(
+        "get_fingerprint_evolution",
+        (
+            "Return per-lap driving fingerprint metrics (throttle/steering "
+            "smoothness, brake aggressiveness) so you can spot trends across the "
+            "stint — fatigue, rising aggression, etc."
+        ),
+        {"type": "object", "properties": {}, "required": []},
+    ),
+    _fn(
+        "find_similar_sessions",
+        (
+            "List other sessions in the local archive matching optional filters. "
+            "Defaults to the current session's venue+vehicle. Use to find prior "
+            "outings to compare against."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "venue": {"type": "string"},
+                "vehicle": {"type": "string"},
+                "driver": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
+        },
+    ),
+    _fn(
+        "compare_sessions",
+        (
+            "Compare another session against the current one: best-lap delta, "
+            "per-sector best deltas, fingerprint diff. Read-only. The other "
+            "session id comes from find_similar_sessions or get_session_history."
+        ),
+        {
+            "type": "object",
+            "properties": {"other_session_id": {"type": "string"}},
+            "required": ["other_session_id"],
+        },
+    ),
+    _fn(
+        "personal_best_sector",
+        (
+            "Find the driver's all-time best time in a given sector at a given "
+            "venue. Returns session_id, lap_num, time_ms."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "venue": {"type": "string"},
+                "sector_num": {"type": "integer"},
+                "driver": {"type": "string"},
+            },
+            "required": ["sector_num"],
+        },
+    ),
+    _fn(
+        "get_session_history",
+        (
+            "List the driver's recent sessions (with venue, vehicle, best lap, "
+            "tags) so you can reason about progression. Defaults to the current "
+            "session's driver."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "driver": {"type": "string"},
+                "venue": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": [],
+        },
+    ),
+    _fn(
+        "list_layouts",
+        (
+            "List saved chart layouts. Use as a precursor to apply_layout if the "
+            "user asks for a saved view."
+        ),
+        {"type": "object", "properties": {}, "required": []},
+    ),
+    _fn(
+        "apply_layout",
+        (
+            "Save a new chart layout and surface it for the user to apply. The "
+            "user must click 'apply' before it activates — the tool only stores "
+            "the proposal. Provide a short name and a list of chart specs."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "charts": {"type": "array"},
+            },
+            "required": ["name", "charts"],
+        },
+    ),
+    _fn(
+        "apply_math_channel",
+        (
+            "Propose a math channel (an arithmetic expression of existing "
+            "channels) that would clarify the analysis. Same two-step UX as "
+            "apply_layout — the user confirms before it lands."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "expression": {"type": "string"},
+            },
+            "required": ["name", "expression"],
+        },
+    ),
 ]
 
 
@@ -404,6 +534,360 @@ async def tool_sample_channel_on_lap(
 
 
 # ---------------------------------------------------------------------------
+# T2.1 / T2.2 / T4.x — newer tools
+# ---------------------------------------------------------------------------
+
+
+async def tool_get_coaching_points(
+    session_id: str, lap_num: Optional[int] = None, sector_num: Optional[int] = None
+) -> dict:
+    from .coaching import get_coaching_points
+    pts = await get_coaching_points(session_id, lap_num, sector_num)
+    return {"points": pts, "count": len(pts)}
+
+
+async def tool_get_fingerprint_evolution(session_id: str) -> dict:
+    from .debrief import get_per_lap_fingerprints
+    rows = await get_per_lap_fingerprints(session_id)
+    return {"laps": rows, "count": len(rows)}
+
+
+async def _resolve_current_session_meta(session_id: str) -> dict:
+    meta = await _session_meta(session_id) or {}
+    return {
+        "venue": meta.get("venue") or "",
+        "vehicle": meta.get("vehicle") or "",
+        "driver": meta.get("driver") or "",
+    }
+
+
+async def tool_find_similar_sessions(
+    session_id: str,
+    venue: Optional[str] = None,
+    vehicle: Optional[str] = None,
+    driver: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    cur_meta = await _resolve_current_session_meta(session_id)
+    venue = venue or cur_meta["venue"]
+    vehicle = vehicle or cur_meta["vehicle"]
+    db = await get_db()
+    try:
+        clauses = ["id != ?"]
+        params: list = [session_id]
+        if venue:
+            clauses.append("venue = ?")
+            params.append(venue)
+        if vehicle:
+            clauses.append("vehicle = ?")
+            params.append(vehicle)
+        if driver:
+            clauses.append("driver = ?")
+            params.append(driver)
+        sql = (
+            "SELECT id, driver, vehicle, venue, log_date, lap_count, "
+            "best_lap_time_ms FROM sessions WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY log_date DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        cur = await db.execute(sql, params)
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    return {"sessions": rows, "filters": {"venue": venue, "vehicle": vehicle, "driver": driver}}
+
+
+async def tool_compare_sessions(session_id: str, other_session_id: str) -> dict:
+    if other_session_id == session_id:
+        return {"error": "other_session_id is the current session"}
+    a_meta = await _session_meta(session_id)
+    b_meta = await _session_meta(other_session_id)
+    if not b_meta:
+        return {"error": "Other session not found"}
+
+    db = await get_db()
+    try:
+        # Sector bests for both
+        cur = await db.execute(
+            "SELECT session_id, sector_num, MIN(duration_ms) AS best "
+            "FROM sector_times WHERE session_id IN (?, ?) GROUP BY session_id, sector_num",
+            (session_id, other_session_id),
+        )
+        rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    a_best: dict[int, int] = {}
+    b_best: dict[int, int] = {}
+    for r in rows:
+        if r["session_id"] == session_id:
+            a_best[int(r["sector_num"])] = int(r["best"])
+        else:
+            b_best[int(r["sector_num"])] = int(r["best"])
+    sector_deltas: list[dict] = []
+    for sn in sorted(set(a_best) & set(b_best)):
+        sector_deltas.append({
+            "sector_num": sn,
+            "current_best_ms": a_best[sn],
+            "other_best_ms": b_best[sn],
+            "delta_ms": a_best[sn] - b_best[sn],
+        })
+
+    a_lap = (a_meta or {}).get("best_lap_time_ms")
+    b_lap = b_meta.get("best_lap_time_ms")
+    return {
+        "current": {
+            "session_id": session_id,
+            "venue": (a_meta or {}).get("venue"),
+            "best_lap_ms": a_lap,
+        },
+        "other": {
+            "session_id": other_session_id,
+            "venue": b_meta.get("venue"),
+            "log_date": b_meta.get("log_date"),
+            "best_lap_ms": b_lap,
+        },
+        "best_lap_delta_ms": (a_lap - b_lap) if (a_lap and b_lap) else None,
+        "sector_deltas": sector_deltas,
+    }
+
+
+async def tool_personal_best_sector(
+    session_id: str,
+    sector_num: int,
+    venue: Optional[str] = None,
+    driver: Optional[str] = None,
+) -> dict:
+    cur_meta = await _resolve_current_session_meta(session_id)
+    venue = venue or cur_meta["venue"]
+    driver = driver or cur_meta["driver"]
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT st.session_id, st.lap_num, st.duration_ms, s.log_date, s.driver
+               FROM sector_times st JOIN sessions s ON s.id = st.session_id
+               WHERE st.sector_num = ?
+                 AND (? = '' OR s.venue = ?)
+                 AND (? = '' OR s.driver = ?)
+               ORDER BY st.duration_ms ASC LIMIT 1""",
+            (int(sector_num), venue, venue, driver, driver),
+        )
+        row = await cur.fetchone()
+    finally:
+        await db.close()
+    if not row:
+        return {"error": "No sector times found for the given filters"}
+    return {
+        "sector_num": int(sector_num),
+        "venue": venue,
+        "driver": driver,
+        "session_id": row["session_id"],
+        "lap_num": int(row["lap_num"]),
+        "time_ms": int(row["duration_ms"]),
+        "log_date": row["log_date"],
+        "is_current": row["session_id"] == session_id,
+    }
+
+
+async def tool_get_session_history(
+    session_id: str,
+    driver: Optional[str] = None,
+    venue: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    cur_meta = await _resolve_current_session_meta(session_id)
+    driver = driver or cur_meta["driver"]
+    db = await get_db()
+    try:
+        clauses = []
+        params: list = []
+        if driver:
+            clauses.append("driver = ?")
+            params.append(driver)
+        if venue:
+            clauses.append("venue = ?")
+            params.append(venue)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, driver, vehicle, venue, log_date, best_lap_time_ms, lap_count "
+            "FROM sessions" + where +
+            " ORDER BY log_date DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        cur = await db.execute(sql, params)
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    return {"sessions": rows}
+
+
+async def tool_list_layouts(session_id: str) -> dict:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT id, name, created_at FROM layouts ORDER BY created_at DESC LIMIT 50"
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    return {"layouts": rows}
+
+
+async def tool_apply_layout(session_id: str, name: str, charts: list) -> dict:
+    """Two-step UX: store the proposal but don't activate it. The frontend
+    surfaces a 'preview & apply' card the user must click."""
+    import json as _json
+    if not name or not isinstance(charts, list):
+        return {"error": "name and charts (list) are required"}
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "INSERT INTO layouts (name, config_json, created_at) VALUES (?, ?, datetime('now'))",
+            (f"[proposed] {name[:60]}", _json.dumps({"charts": charts, "proposed": True})),
+        )
+        new_id = cur.lastrowid
+        await db.commit()
+    finally:
+        await db.close()
+    return {
+        "layout_id": new_id,
+        "name": name,
+        "status": "proposed",
+        "note": "Layout stored as a proposal. The user must click Apply.",
+    }
+
+
+async def tool_apply_math_channel(
+    session_id: str, name: str, expression: str
+) -> dict:
+    """Two-step: persist as a draft math channel for the user to confirm."""
+    if not name or not expression:
+        return {"error": "name and expression are required"}
+    db = await get_db()
+    try:
+        # Store under user_settings as a JSON queue keyed by session_id so the
+        # workspace can render the proposal banner.
+        import json as _json
+        key = f"math_proposal:{session_id}"
+        cur = await db.execute(
+            "SELECT value FROM user_settings WHERE key = ?", (key,)
+        )
+        row = await cur.fetchone()
+        existing: list[dict] = []
+        if row and row["value"]:
+            try:
+                existing = _json.loads(row["value"]) or []
+            except Exception:
+                existing = []
+        existing.append({"name": name, "expression": expression, "status": "proposed"})
+        await db.execute(
+            "INSERT INTO user_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, _json.dumps(existing)),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    return {
+        "name": name,
+        "expression": expression,
+        "status": "proposed",
+        "note": "Math channel stored as a proposal. The user must click Apply in the workspace.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool result summaries (T1.4) — one-line description for the collapsed chip.
+# ---------------------------------------------------------------------------
+
+
+def _fmt_lap_time(ms: Optional[float]) -> str:
+    if ms is None or not isinstance(ms, (int, float)) or ms <= 0:
+        return "—"
+    total = float(ms) / 1000.0
+    m = int(total // 60)
+    s = total - m * 60
+    return f"{m}:{s:06.3f}"
+
+
+def summarize_tool_result(name: str, input: dict, result: Any) -> str:
+    """Compact one-liner for the collapsed tool chip. Best-effort, never raises."""
+    if not isinstance(result, dict):
+        return ""
+    if result.get("error"):
+        return f"error: {str(result['error'])[:60]}"
+
+    try:
+        if name == "get_session_overview":
+            return (
+                f"{result.get('lap_count', 0)} laps · "
+                f"best {_fmt_lap_time(result.get('best_lap_time_ms'))} · "
+                f"{result.get('channel_count', 0)} channels"
+            )
+        if name == "list_laps":
+            best = result.get("best_lap") or {}
+            return (
+                f"{result.get('racing_lap_count', 0)} racing laps · "
+                f"best L{best.get('num', '?')} {_fmt_lap_time(best.get('duration_ms'))}"
+            )
+        if name == "get_lap_stats":
+            chans = result.get("channels") or {}
+            parts = []
+            for ch, st in list(chans.items())[:2]:
+                if isinstance(st, dict) and "max" in st:
+                    parts.append(f"{ch} max {st['max']}")
+            return f"L{result.get('lap_num')}: " + " · ".join(parts) if parts else f"L{result.get('lap_num')}"
+        if name == "compare_laps_delta":
+            return (
+                f"L{result.get('compare_lap')} vs L{result.get('ref_lap')}: "
+                f"gap {result.get('total_gap_ms', 0):+.0f} ms · "
+                f"peak loss {result.get('peak_loss_ms', 0):+.0f} ms @ "
+                f"{result.get('peak_loss_distance_pct', 0):.0f}%"
+            )
+        if name == "get_sector_times":
+            sectors = result.get("sectors") or []
+            tb = result.get("theoretical_best_ms")
+            return f"{len(sectors)} sectors · theo best {_fmt_lap_time(tb)}"
+        if name == "get_anomalies":
+            counts = result.get("counts") or {}
+            return (
+                f"{counts.get('critical', 0)} crit · "
+                f"{counts.get('warning', 0)} warn · "
+                f"{counts.get('info', 0)} info"
+            )
+        if name == "get_debrief":
+            cov = (result.get("lap_consistency") or {}).get("coefficient_of_variation")
+            return f"COV {cov*100:.1f}%" if cov is not None else "debrief"
+        if name == "sample_channel_on_lap":
+            n = len(result.get("samples") or [])
+            return f"{n} samples of {result.get('channel')} on L{result.get('lap_num')}"
+        if name == "get_coaching_points":
+            return f"{result.get('count', 0)} coaching points"
+        if name == "get_fingerprint_evolution":
+            return f"{result.get('count', 0)} laps of fingerprint history"
+        if name == "find_similar_sessions":
+            return f"{len(result.get('sessions') or [])} matching sessions"
+        if name == "compare_sessions":
+            d = result.get("best_lap_delta_ms")
+            return f"best-lap delta {d:+.0f} ms" if d is not None else "comparison"
+        if name == "personal_best_sector":
+            ms = result.get("time_ms")
+            return f"PB S{result.get('sector_num')}: {_fmt_lap_time(ms)}" if ms else "no record"
+        if name == "get_session_history":
+            return f"{len(result.get('sessions') or [])} prior sessions"
+        if name == "list_layouts":
+            return f"{len(result.get('layouts') or [])} saved layouts"
+        if name == "apply_layout":
+            return f"proposed layout '{result.get('name', '')}'"
+        if name == "apply_math_channel":
+            return f"proposed math channel '{result.get('name', '')}'"
+    except Exception:
+        return ""
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -438,6 +922,50 @@ async def execute_tool(name: str, input: dict, session_id: str) -> dict:
                 session_id,
                 int(input["lap_num"]),
                 str(input["channel"]),
+            )
+        if name == "get_coaching_points":
+            return await tool_get_coaching_points(
+                session_id,
+                int(input["lap_num"]) if input.get("lap_num") is not None else None,
+                int(input["sector_num"]) if input.get("sector_num") is not None else None,
+            )
+        if name == "get_fingerprint_evolution":
+            return await tool_get_fingerprint_evolution(session_id)
+        if name == "find_similar_sessions":
+            return await tool_find_similar_sessions(
+                session_id,
+                input.get("venue"),
+                input.get("vehicle"),
+                input.get("driver"),
+                int(input.get("limit", 20) or 20),
+            )
+        if name == "compare_sessions":
+            return await tool_compare_sessions(
+                session_id, str(input["other_session_id"])
+            )
+        if name == "personal_best_sector":
+            return await tool_personal_best_sector(
+                session_id,
+                int(input["sector_num"]),
+                input.get("venue"),
+                input.get("driver"),
+            )
+        if name == "get_session_history":
+            return await tool_get_session_history(
+                session_id,
+                input.get("driver"),
+                input.get("venue"),
+                int(input.get("limit", 20) or 20),
+            )
+        if name == "list_layouts":
+            return await tool_list_layouts(session_id)
+        if name == "apply_layout":
+            return await tool_apply_layout(
+                session_id, str(input["name"]), list(input["charts"])
+            )
+        if name == "apply_math_channel":
+            return await tool_apply_math_channel(
+                session_id, str(input["name"]), str(input["expression"])
             )
         return {"error": f"Unknown tool: {name}"}
     except KeyError as e:

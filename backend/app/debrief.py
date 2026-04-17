@@ -200,13 +200,12 @@ def compute_corner_performance(
     return out
 
 
-def compute_weather_correlation(
+def compute_session_trend(
     laps: list[dict], log_sheet: Optional[dict]
 ) -> Optional[dict]:
-    """Best we can offer with a single point weather sample: relationship
-    between lap number and lap time. Track/air temp are single values for
-    the whole session so they can't correlate here. Still return the
-    context so the UI can display it alongside.
+    """Lap-index → lap-time trend. Single-point weather is included as
+    context only — it can't correlate per-lap so we don't pretend it does.
+    (Renamed from ``compute_weather_correlation`` in T1.8.)
     """
     if len(laps) < 3:
         return None
@@ -250,6 +249,10 @@ def compute_weather_correlation(
     }
 
 
+# Backwards-compat alias for any legacy import path.
+compute_weather_correlation = compute_session_trend
+
+
 def _safe_channel_match(names: list[str], needles: list[str]) -> Optional[str]:
     low = {c.lower(): c for c in names}
     for n in needles:
@@ -261,9 +264,9 @@ def _safe_channel_match(names: list[str], needles: list[str]) -> Optional[str]:
 
 
 def compute_driving_fingerprint(
-    session_id: str, best_lap_num: int, channel_names: list[str]
+    session_id: str, lap_num: int, channel_names: list[str]
 ) -> Optional[dict]:
-    """Coarse stats on throttle/brake/steering derivatives for the best lap.
+    """Smoothness / aggressiveness scalars for one lap (T2.4 per-lap variant).
 
     * braking_aggressiveness = median abs(d/dt brake_pressure or brake)
     * throttle_smoothness    = 1 / (1 + stddev of d/dt throttle%)  → 0..1
@@ -277,14 +280,14 @@ def compute_driving_fingerprint(
     if not wanted:
         return None
 
-    table = get_resampled_lap_data(session_id, wanted, best_lap_num)
+    table = get_resampled_lap_data(session_id, wanted, lap_num)
     if table is None or table.num_rows < 50:
         return None
 
     tc = np.array(table.column("timecodes").to_pylist(), dtype=np.float64)
     if len(tc) < 2:
         return None
-    dt_ms = np.maximum(np.diff(tc), 1.0)  # avoid div by zero
+    dt_ms = np.maximum(np.diff(tc), 1.0)
 
     out: dict[str, Any] = {}
 
@@ -304,8 +307,63 @@ def compute_driving_fingerprint(
         dy = np.diff(y) / (dt_ms / 1000.0)
         out["steering_smoothness"] = round(float(1.0 / (1.0 + float(np.std(dy)))), 3)
 
-    out["reference_lap"] = best_lap_num
+    out["reference_lap"] = lap_num
     return out or None
+
+
+async def compute_per_lap_fingerprints(
+    session_id: str, racing_laps: list[dict], channel_names: list[str]
+) -> list[dict]:
+    """Compute and persist per-lap fingerprints (T2.4)."""
+    out: list[dict] = []
+    db = await get_db()
+    try:
+        await db.execute(
+            "DELETE FROM lap_fingerprints WHERE session_id = ?", (session_id,)
+        )
+        rows = []
+        for lap in racing_laps:
+            fp = compute_driving_fingerprint(session_id, lap["num"], channel_names)
+            if not fp:
+                continue
+            entry = {"lap_num": lap["num"], **fp}
+            out.append(entry)
+            rows.append(
+                (
+                    session_id,
+                    lap["num"],
+                    fp.get("throttle_smoothness"),
+                    fp.get("braking_aggressiveness"),
+                    fp.get("max_brake"),
+                    fp.get("steering_smoothness"),
+                )
+            )
+        if rows:
+            await db.executemany(
+                """INSERT OR REPLACE INTO lap_fingerprints
+                   (session_id, lap_num, throttle_smoothness,
+                    braking_aggressiveness, max_brake, steering_smoothness)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+            await db.commit()
+    finally:
+        await db.close()
+    return out
+
+
+async def get_per_lap_fingerprints(session_id: str) -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT lap_num, throttle_smoothness, braking_aggressiveness, "
+            "max_brake, steering_smoothness FROM lap_fingerprints "
+            "WHERE session_id = ? ORDER BY lap_num",
+            (session_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+    finally:
+        await db.close()
 
 
 def _list_channels_in_cache(session_id: str) -> list[str]:
@@ -347,6 +405,8 @@ async def generate_debrief(session_id: str) -> dict:
     if laps:
         best_lap_num = min(laps, key=lambda l: l["duration_ms"])["num"]
 
+    session_trend = compute_session_trend(laps, log_sheet)
+
     debrief = {
         "session_id": session_id,
         "meta": {
@@ -360,16 +420,38 @@ async def generate_debrief(session_id: str) -> dict:
         "lap_consistency": compute_lap_consistency(laps),
         "sector_consistency": compute_sector_consistency(sector_times),
         "corner_performance": compute_corner_performance(sector_times, laps),
-        "weather_correlation": compute_weather_correlation(laps, log_sheet),
+        # T1.8: renamed key. Old `weather_correlation` kept as alias so the
+        # frontend can read both during the migration window.
+        "session_trend": session_trend,
+        "weather_correlation": session_trend,
         "driving_fingerprint": (
             compute_driving_fingerprint(session_id, best_lap_num, channels)
             if best_lap_num is not None
             else None
         ),
+        # T1.1: narrative is generated async after stats land. Default to
+        # 'pending' so the UI can shimmer; the narrative writer flips it to
+        # 'ready' (and fills `narrative.summary`/`action_items`) when done.
+        "narrative": {"status": "pending", "summary": "", "action_items": []},
     }
 
-    # Persist to cache
+    # T2.4: per-lap fingerprints (also feeds T3.4 benchmarks)
+    try:
+        await compute_per_lap_fingerprints(session_id, laps, channels)
+    except Exception as e:
+        print(f"[debrief] per-lap fingerprint failed for {session_id}: {e}")
+
+    # Persist the stats payload first so the UI has something to render
     await _persist_debrief(session_id, debrief)
+
+    # T1.1: kick off the LLM narrative as a background task.
+    try:
+        import asyncio as _asyncio
+        from . import narrative as _narrative
+        _asyncio.create_task(_narrative.generate_and_persist_narrative(session_id, debrief))
+    except Exception as e:
+        print(f"[debrief] narrative scheduling failed for {session_id}: {e}")
+
     return debrief
 
 
