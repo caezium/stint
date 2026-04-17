@@ -251,6 +251,125 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_msg_conv ON chat_messages(conversation_id)"
     )
 
+    # ------------------------------------------------------------------
+    # Phase 0 / 1 / 2 / 3 / 4 additive migrations for the AI rebaseline
+    # ------------------------------------------------------------------
+
+    # chat_messages: token usage + model pinning (Phase 0 / T3.7)
+    cur = await db.execute("PRAGMA table_info(chat_messages)")
+    cm_cols = {row[1] for row in await cur.fetchall()}
+    if "tokens_in" not in cm_cols:
+        await db.execute("ALTER TABLE chat_messages ADD COLUMN tokens_in INTEGER")
+    if "tokens_out" not in cm_cols:
+        await db.execute("ALTER TABLE chat_messages ADD COLUMN tokens_out INTEGER")
+    if "model" not in cm_cols:
+        await db.execute("ALTER TABLE chat_messages ADD COLUMN model TEXT")
+
+    # chat_conversations: pin a model to a conversation (T3.7)
+    cur = await db.execute("PRAGMA table_info(chat_conversations)")
+    cc_cols = {row[1] for row in await cur.fetchall()}
+    if "model" not in cc_cols:
+        await db.execute("ALTER TABLE chat_conversations ADD COLUMN model TEXT")
+
+    # anomalies: lap-relative location of the offending sample (T1.6)
+    cur = await db.execute("PRAGMA table_info(anomalies)")
+    a_cols = {row[1] for row in await cur.fetchall()}
+    if "distance_pct" not in a_cols:
+        await db.execute("ALTER TABLE anomalies ADD COLUMN distance_pct REAL")
+    if "time_in_lap_ms" not in a_cols:
+        await db.execute("ALTER TABLE anomalies ADD COLUMN time_in_lap_ms INTEGER")
+
+    # laps: pit-in flag so pace stats can exclude in/out laps cleanly (T2.3)
+    if "is_pit_lap" not in lcols:
+        await db.execute("ALTER TABLE laps ADD COLUMN is_pit_lap INTEGER DEFAULT 0")
+
+    # Per-lap fingerprint history (T2.4)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS lap_fingerprints (
+            session_id TEXT NOT NULL,
+            lap_num INTEGER NOT NULL,
+            throttle_smoothness REAL,
+            braking_aggressiveness REAL,
+            max_brake REAL,
+            steering_smoothness REAL,
+            computed_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (session_id, lap_num),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Coaching points produced by backend/app/coaching.py (T2.1)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS coaching_points (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            lap_num INTEGER,
+            sector_num INTEGER,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            computed_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_coaching_points_session "
+        "ON coaching_points(session_id, lap_num, sector_num)"
+    )
+
+    # Auto-tags surfaced in session list (T2.6)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS session_tags (
+            session_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            PRIMARY KEY (session_id, tag),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Coaching plan + focus items (T4.1)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS coaching_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL UNIQUE,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS coaching_focus_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            item_text TEXT NOT NULL,
+            target_metric TEXT,
+            target_value REAL,
+            status TEXT DEFAULT 'open',
+            evaluation_json TEXT,
+            FOREIGN KEY (plan_id) REFERENCES coaching_plans(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Per-message feedback (T3.6 future eval)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS chat_feedback (
+            message_id INTEGER PRIMARY KEY,
+            rating INTEGER NOT NULL,
+            note TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Proactive nudges (T3.3)
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS proactive_nudges (
+            session_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            dismissed_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
 
 async def init_db():
     db = await get_db()
