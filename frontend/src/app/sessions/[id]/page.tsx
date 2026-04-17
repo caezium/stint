@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import {
   fetchSession,
   fetchTrack,
@@ -23,9 +22,22 @@ import {
 } from "@/lib/api";
 import { LogSheetPanel } from "@/components/log-sheet-panel";
 import { AnomalyPanel } from "@/components/anomaly-panel";
-import { DebriefPanel } from "@/components/debrief-panel";
+import {
+  DebriefHeadline,
+  DrivingFingerprintCard,
+  SessionTrendCard,
+  useDebrief,
+} from "@/components/debrief-panel";
+import { CoachingPlanCard } from "@/components/coaching-plan-card";
+import { ConsistencyCard } from "@/components/consistency-card";
+import { CornerHeatmap } from "@/components/corner-heatmap";
 import { ChatPanel } from "@/components/chat-panel";
-import { ChatToggleButton } from "@/components/chat-toggle";
+import { NudgeBanner } from "@/components/nudge-banner";
+import { SessionHeaderStrip } from "@/components/session-detail/session-header-strip";
+import { SessionStickyBar } from "@/components/session-detail/session-sticky-bar";
+import { LapDeltaBars } from "@/components/session-detail/lap-delta-bars";
+import { ActionRail } from "@/components/session-detail/action-rail";
+import { useChatStore } from "@/stores/chat-store";
 import { formatLapTime, CHANNEL_CATEGORIES } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -38,15 +50,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-const TrackMapLeaflet = dynamic(() => import("@/components/track-map-leaflet"), {
-  ssr: false,
-  loading: () => (
-    <div className="h-[280px] w-full flex items-center justify-center rounded bg-muted text-xs text-muted-foreground">
-      Loading map…
-    </div>
-  ),
-});
 
 export default function SessionDetailPage() {
   const params = useParams();
@@ -64,6 +67,20 @@ export default function SessionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const heroRef = useRef<HTMLDivElement>(null);
+  const setChatOpen = useChatStore((s) => s.setOpen);
+
+  const {
+    debrief,
+    history,
+    bench,
+    loading: debriefLoading,
+    error: debriefError,
+    recomputing: debriefRecomputing,
+    sessionTrend,
+    recompute: recomputeDebriefHook,
+  } = useDebrief(id);
+
   useEffect(() => {
     if (!id) return;
     Promise.all([
@@ -77,7 +94,6 @@ export default function SessionDetailPage() {
     fetchTracks().then(setTracks).catch(() => setTracks([]));
   }, [id]);
 
-  // Fetch the bound Track (with sf_line / split_lines / pit_lane) whenever track_id changes
   useEffect(() => {
     const tid = session?.track_id;
     if (tid == null) {
@@ -93,51 +109,31 @@ export default function SessionDetailPage() {
 
   const assignedTrack = boundTrack ?? tracks.find((t) => t.id === session?.track_id) ?? null;
 
-  // Helper: parse SF/splits whether they are objects, arrays, or JSON strings
-  function parseMaybeJson<T>(v: unknown): T | null {
-    if (v == null) return null;
-    if (typeof v === "string") {
-      try { return JSON.parse(v) as T; } catch { return null; }
-    }
-    return v as T;
-  }
-  const sfLineParsed = parseMaybeJson<{ lat1: number; lon1: number; lat2: number; lon2: number }>(
-    boundTrack?.sf_line as unknown
-  );
-  const splitsParsed =
-    parseMaybeJson<{ lat1: number; lon1: number; lat2: number; lon2: number }[]>(
-      boundTrack?.split_lines as unknown
-    ) ?? [];
-  const pitLaneParsed =
-    parseMaybeJson<number[][]>(boundTrack?.pit_lane as unknown) ?? undefined;
-
   async function handleAssign(field: "driver_id" | "vehicle_id", value: number | null) {
     if (!session) return;
     await assignSession(session.id, { [field]: value });
     setSession({ ...session, [field]: value });
   }
 
+  async function handleRecomputeFromTrack() {
+    if (!assignedTrack || !session) return;
+    setRecomputeMsg(null);
+    try {
+      const r = await recomputeFromTrack(id, assignedTrack.id);
+      setRecomputeMsg(`Recomputed ${r.laps.length} laps`);
+      const s = await fetchSession(id);
+      setSession(s);
+    } catch (e) {
+      setRecomputeMsg(e instanceof Error ? e.message : "Failed");
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 text-muted-foreground">
-        <svg
-          className="animate-spin h-5 w-5 mr-3"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
+        <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
         Loading session...
       </div>
@@ -156,351 +152,288 @@ export default function SessionDetailPage() {
     );
   }
 
-  // Compute best lap
   const validLaps = session.laps.filter((l) => l.num > 0 && l.duration_ms > 0);
   const bestTime = validLaps.length
     ? Math.min(...validLaps.map((l) => l.duration_ms))
     : null;
 
-  // Group channels by category
-  const groupedChannels = groupChannelsByCategory(session.channels);
+  const cons = debrief?.lap_consistency;
+  const covPct =
+    cons?.coefficient_of_variation != null
+      ? cons.coefficient_of_variation * 100
+      : null;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Back link */}
-      <Link
-        href="/sessions"
-        className="text-sm text-muted-foreground hover:text-foreground transition-colors mb-6 inline-block"
-      >
-        &larr; Back to Sessions
-      </Link>
-
-      {/* Header */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            {session.venue || "Session"}
-          </h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            {session.driver && `${session.driver} \u2022 `}
-            {session.log_date}
-            {session.log_time && ` \u2022 ${session.log_time}`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ChatToggleButton />
-          <Link href={`/sessions/${id}/analysis`}>
-            <Button>Open Analysis</Button>
-          </Link>
-        </div>
-      </div>
-
+    <>
+      <SessionStickyBar
+        session={session}
+        heroRef={heroRef}
+        onOpenChat={() => setChatOpen(true)}
+      />
       <ChatPanel sessionId={id} />
 
-      {/* Metadata cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Driver</p>
-            <select
-              value={session.driver_id ?? ""}
-              onChange={(e) =>
-                handleAssign("driver_id", e.target.value === "" ? null : Number(e.target.value))
-              }
-              className="w-full bg-muted rounded px-2 py-1 text-sm"
-            >
-              <option value="">{session.driver || "—"}</option>
-              {drivers.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Vehicle</p>
-            <select
-              value={session.vehicle_id ?? ""}
-              onChange={(e) =>
-                handleAssign("vehicle_id", e.target.value === "" ? null : Number(e.target.value))
-              }
-              className="w-full bg-muted rounded px-2 py-1 text-sm"
-            >
-              <option value="">{session.vehicle || "—"}</option>
-              {vehicles.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </select>
-          </CardContent>
-        </Card>
-        <MetaCard label="Logger" value={session.logger_model || "—"} />
-        <MetaCard
-          label="Duration"
-          value={
-            session.total_duration_ms
-              ? formatLapTime(session.total_duration_ms)
-              : "—"
-          }
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <Link
+          href="/sessions"
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-block mb-3"
+        >
+          &larr; Back to Sessions
+        </Link>
+
+        <SessionHeaderStrip
+          ref={heroRef}
+          session={session}
+          assignedTrack={assignedTrack}
+          track={track}
+          drivers={drivers}
+          vehicles={vehicles}
+          onAssignDriver={(id) => handleAssign("driver_id", id)}
+          onAssignVehicle={(id) => handleAssign("vehicle_id", id)}
+          validLapCount={validLaps.length}
+          bestMs={bestTime}
+          durationMs={session.total_duration_ms ?? null}
+          cleanLapCount={cons?.clean_lap_count ?? null}
+          covPct={covPct}
         />
-      </div>
 
-      {/* Track card */}
-      {assignedTrack && (
-        <Card className="mb-4">
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <p className="text-xs text-muted-foreground">Track</p>
-              <p className="font-medium">{assignedTrack.name}</p>
-              {assignedTrack.sf_line && (
-                <p className="text-xs text-green-400">S/F line configured</p>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <Link href={`/tracks/${assignedTrack.id}/edit`}>
-                <Button size="sm" variant="secondary">Edit track</Button>
-              </Link>
-              {assignedTrack.sf_line && (
-                <Button
-                  size="sm"
-                  onClick={async () => {
-                    setRecomputeMsg(null);
-                    try {
-                      const r = await recomputeFromTrack(id, assignedTrack.id);
-                      setRecomputeMsg(`Recomputed ${r.laps.length} laps`);
-                      const s = await fetchSession(id);
-                      setSession(s);
-                    } catch (e) {
-                      setRecomputeMsg(e instanceof Error ? e.message : "Failed");
-                    }
-                  }}
-                >
-                  Recompute from track
-                </Button>
-              )}
-            </div>
-          </CardContent>
-          {recomputeMsg && (
-            <div className="px-4 pb-3 text-xs text-muted-foreground">{recomputeMsg}</div>
-          )}
-        </Card>
-      )}
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-[1fr_240px] gap-6 items-start">
+          {/* === Main scroll column === */}
+          <div className="space-y-4 min-w-0">
+            <NudgeBanner sessionId={id} />
 
-      <div className="mb-6 space-y-4">
-        <AnomalyPanel sessionId={id} />
-        <DebriefPanel sessionId={id} />
-      </div>
-
-      <LogSheetPanel sessionId={id} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
-        {/* Lap times table */}
-        <div className="lg:col-span-2">
-          <Card>
-            <CardContent className="p-0">
-              <div className="px-5 py-4 border-b border-border">
-                <h2 className="font-semibold">
-                  Lap Times
-                  <Badge variant="secondary" className="ml-2">
-                    {session.lap_count} laps
-                  </Badge>
-                </h2>
-              </div>
-              {(() => {
-                const maxSplits = Math.max(
-                  0,
-                  ...session.laps.map((l) => (l.split_times ?? []).length),
-                );
-                return (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-20">Lap #</TableHead>
-                        <TableHead>Time</TableHead>
-                        <TableHead>Delta</TableHead>
-                        {Array.from({ length: maxSplits }).map((_, i) => (
-                          <TableHead key={i} className="text-xs">S{i + 1}</TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {session.laps.map((lap) => {
-                        const isOutLap = lap.num === 0;
-                        const isBest =
-                          bestTime !== null &&
-                          lap.num > 0 &&
-                          lap.duration_ms === bestTime;
-                        const delta =
-                          bestTime !== null && lap.num > 0 && lap.duration_ms > 0
-                            ? lap.duration_ms - bestTime
-                            : null;
-                        const splits = lap.split_times ?? [];
-                        return (
-                          <TableRow
-                            key={lap.num}
-                            className={
-                              isOutLap ? "opacity-50" : isBest ? "bg-green-500/10" : ""
-                            }
-                          >
-                            <TableCell className="font-mono text-sm">
-                              {isOutLap ? "Out" : lap.num}
-                            </TableCell>
-                            <TableCell
-                              className={`font-mono text-sm ${isBest ? "text-green-400 font-semibold" : ""}`}
-                            >
-                              {lap.duration_ms > 0 ? formatLapTime(lap.duration_ms) : "—"}
-                            </TableCell>
-                            <TableCell className="font-mono text-sm text-muted-foreground">
-                              {delta !== null && delta > 0
-                                ? `+${(delta / 1000).toFixed(3)}`
-                                : delta === 0
-                                  ? "BEST"
-                                  : "—"}
-                            </TableCell>
-                            {Array.from({ length: maxSplits }).map((_, i) => (
-                              <TableCell key={i} className="font-mono text-xs text-muted-foreground">
-                                {splits[i] != null ? (splits[i]! / 1000).toFixed(2) : "—"}
-                              </TableCell>
-                            ))}
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                );
-              })()}
-            </CardContent>
-          </Card>
-
-          {/* Lap-start diagnostics */}
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={async () => {
-                setShowDiag((v) => !v);
-                if (!diagnostics) {
-                  try {
-                    setDiagnostics(await fetchLapDiagnostics(id));
-                  } catch {
-                    setDiagnostics([]);
-                  }
-                }
-              }}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              {showDiag ? "Hide" : "Show"} lap-start diagnostics
-            </button>
-            {showDiag && diagnostics && (
-              <Card className="mt-2">
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-20">Lap</TableHead>
-                        <TableHead>libxrk start (ms)</TableHead>
-                        <TableHead>first sample (ms)</TableHead>
-                        <TableHead>diff (ms)</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {diagnostics.map((d) => (
-                        <TableRow
-                          key={d.num}
-                          className={Math.abs(d.diff_ms) > 50 ? "text-amber-400" : ""}
-                        >
-                          <TableCell className="font-mono text-sm">{d.num}</TableCell>
-                          <TableCell className="font-mono text-sm">{d.start_time_ms_libxrk}</TableCell>
-                          <TableCell className="font-mono text-sm">{d.first_sample_timecode_ms}</TableCell>
-                          <TableCell className="font-mono text-sm">{d.diff_ms}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
+            {/* Coach summary / Coaching plan */}
+            {debriefLoading && (
+              <Card><CardContent className="p-5 text-xs text-muted-foreground">Loading debrief…</CardContent></Card>
             )}
-          </div>
-        </div>
+            {debriefError && (
+              <Card><CardContent className="p-5 text-xs text-destructive">{debriefError}</CardContent></Card>
+            )}
+            {!debriefLoading && !debriefError && debrief && (
+              <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
+                <div className="xl:col-span-3">
+                  <DebriefHeadline narrative={debrief.narrative} sessionId={id} />
+                </div>
+                <div className="xl:col-span-2">
+                  <CoachingPlanCard sessionId={id} />
+                </div>
+              </div>
+            )}
 
-        {/* Sidebar: Track map + Channels */}
-        <div className="space-y-6">
-          {/* Track map */}
-          <Card>
-            <CardContent className="p-4">
-              <h2 className="font-semibold mb-3">Track Map</h2>
-              <div className="h-[280px] w-full rounded overflow-hidden">
-                {track && track.lat.length > 0 ? (
-                  <TrackMapLeaflet
-                    outline={track.lat.map((la, i) => [la, track.lon[i]])}
-                    speed={track.speed}
-                    sfLine={sfLineParsed}
-                    splitLines={splitsParsed}
-                    pitLane={pitLaneParsed}
-                    height="100%"
+            {/* Lap pace viz + table */}
+            <LapDeltaBars laps={session.laps} />
+
+            {/* Session insights — consistency / corners / fingerprint */}
+            {!debriefLoading && debrief && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <ConsistencyCard consistency={debrief.lap_consistency} />
+                <CornerHeatmap corners={debrief.corner_performance} />
+                {debrief.driving_fingerprint && (
+                  <DrivingFingerprintCard
+                    fp={debrief.driving_fingerprint}
+                    history={history}
+                    bench={bench}
                   />
-                ) : (
-                  <div className="h-full w-full flex items-center justify-center rounded bg-muted text-xs text-muted-foreground">
-                    No GPS data available
-                  </div>
                 )}
               </div>
-              {!session.track_id && (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  No track assigned — run auto-match on re-upload, or create a track manually.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+            )}
 
-          {/* Channels */}
-          <Card>
-            <CardContent className="p-4">
-              <h2 className="font-semibold mb-3">
-                Channels
-                <Badge variant="secondary" className="ml-2">
-                  {session.channels.length}
-                </Badge>
-              </h2>
-              <div className="space-y-4">
-                {Object.entries(groupedChannels).map(([category, channels]) => (
-                  <div key={category}>
-                    <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
-                      {category}
-                    </h3>
-                    <div className="flex flex-wrap gap-1.5">
-                      {channels.map((ch) => (
-                        <Badge
-                          key={ch.name}
-                          variant="outline"
-                          className="text-xs font-normal"
-                        >
-                          {ch.name}
-                          {ch.units && (
-                            <span className="text-muted-foreground ml-1">
-                              ({ch.units})
-                            </span>
-                          )}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+            {sessionTrend && <SessionTrendCard insight={sessionTrend} />}
+
+            <AnomalyPanel sessionId={id} defaultCollapsed />
+
+            {/* Lap times table */}
+            <Card>
+              <CardContent className="p-0">
+                <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+                  <h2 className="font-semibold text-sm">
+                    Lap times
+                    <Badge variant="secondary" className="ml-2">
+                      {session.lap_count} laps
+                    </Badge>
+                  </h2>
+                </div>
+                {(() => {
+                  const maxSplits = Math.max(
+                    0,
+                    ...session.laps.map((l) => (l.split_times ?? []).length),
+                  );
+                  return (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-16">#</TableHead>
+                          <TableHead>Time</TableHead>
+                          <TableHead>Delta</TableHead>
+                          {Array.from({ length: maxSplits }).map((_, i) => (
+                            <TableHead key={i} className="text-xs">S{i + 1}</TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {session.laps.map((lap) => {
+                          const isOutLap = lap.num === 0;
+                          const isBest =
+                            bestTime !== null &&
+                            lap.num > 0 &&
+                            lap.duration_ms === bestTime;
+                          const delta =
+                            bestTime !== null && lap.num > 0 && lap.duration_ms > 0
+                              ? lap.duration_ms - bestTime
+                              : null;
+                          const splits = lap.split_times ?? [];
+                          return (
+                            <TableRow
+                              key={lap.num}
+                              className={
+                                isOutLap ? "opacity-50" : isBest ? "bg-green-500/10" : ""
+                              }
+                            >
+                              <TableCell className="font-mono text-sm">
+                                {isOutLap ? "Out" : lap.num}
+                              </TableCell>
+                              <TableCell
+                                className={`font-mono text-sm ${isBest ? "text-green-400 font-semibold" : ""}`}
+                              >
+                                {lap.duration_ms > 0 ? formatLapTime(lap.duration_ms) : "—"}
+                              </TableCell>
+                              <TableCell className="font-mono text-sm text-muted-foreground">
+                                {delta !== null && delta > 0
+                                  ? `+${(delta / 1000).toFixed(3)}`
+                                  : delta === 0
+                                    ? "BEST"
+                                    : "—"}
+                              </TableCell>
+                              {Array.from({ length: maxSplits }).map((_, i) => (
+                                <TableCell key={i} className="font-mono text-xs text-muted-foreground">
+                                  {splits[i] != null ? (splits[i]! / 1000).toFixed(2) : "—"}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                Lap-start diagnostics
+              </summary>
+              <div className="mt-2">
+                {!diagnostics && (
+                  <button
+                    onClick={async () => {
+                      setShowDiag(true);
+                      try {
+                        setDiagnostics(await fetchLapDiagnostics(id));
+                      } catch {
+                        setDiagnostics([]);
+                      }
+                    }}
+                    className="text-xs text-primary underline"
+                  >
+                    Load diagnostics
+                  </button>
+                )}
+                {showDiag && diagnostics && (
+                  <Card className="mt-2">
+                    <CardContent className="p-0">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-20">Lap</TableHead>
+                            <TableHead>libxrk start (ms)</TableHead>
+                            <TableHead>first sample (ms)</TableHead>
+                            <TableHead>diff (ms)</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {diagnostics.map((d) => (
+                            <TableRow
+                              key={d.num}
+                              className={Math.abs(d.diff_ms) > 50 ? "text-amber-400" : ""}
+                            >
+                              <TableCell className="font-mono text-sm">{d.num}</TableCell>
+                              <TableCell className="font-mono text-sm">{d.start_time_ms_libxrk}</TableCell>
+                              <TableCell className="font-mono text-sm">{d.first_sample_timecode_ms}</TableCell>
+                              <TableCell className="font-mono text-sm">{d.diff_ms}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
-            </CardContent>
-          </Card>
+            </details>
+
+            {/* Channels drawer */}
+            <Card>
+              <CardContent className="p-4">
+                <details>
+                  <summary className="cursor-pointer font-medium text-sm flex items-center">
+                    Channels
+                    <Badge variant="secondary" className="ml-2">
+                      {session.channels.length}
+                    </Badge>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      Expand
+                    </span>
+                  </summary>
+                  <div className="mt-3 space-y-3">
+                    {Object.entries(groupChannelsByCategory(session.channels)).map(([category, channels]) => (
+                      <div key={category}>
+                        <h4 className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                          {category}
+                        </h4>
+                        <div className="flex flex-wrap gap-1">
+                          {channels.map((ch) => (
+                            <Badge
+                              key={ch.name}
+                              variant="outline"
+                              className="text-[10px] font-normal"
+                            >
+                              {ch.name}
+                              {ch.units && (
+                                <span className="text-muted-foreground ml-1">
+                                  ({ch.units})
+                                </span>
+                              )}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </CardContent>
+            </Card>
+
+            <LogSheetPanel sessionId={id} />
+          </div>
+
+          {/* === Right action rail === */}
+          <aside className="hidden lg:block sticky top-4 self-start">
+            <ActionRail
+              sessionId={id}
+              hasTrack={!!assignedTrack}
+              hasSfLine={!!assignedTrack?.sf_line}
+              trackId={assignedTrack?.id ?? null}
+              onOpenChat={() => setChatOpen(true)}
+              onRecomputeFromTrack={
+                assignedTrack?.sf_line ? handleRecomputeFromTrack : undefined
+              }
+              onRegenerateDebrief={recomputeDebriefHook}
+              recomputeMsg={recomputeMsg}
+              debriefRecomputing={debriefRecomputing}
+            />
+          </aside>
         </div>
       </div>
-    </div>
-  );
-}
-
-function MetaCard({ label, value }: { label: string; value: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <p className="text-xs text-muted-foreground mb-1">{label}</p>
-        <p className="font-medium text-sm truncate">{value}</p>
-      </CardContent>
-    </Card>
+    </>
   );
 }
 
@@ -508,7 +441,6 @@ function groupChannelsByCategory(
   channels: SessionDetail["channels"]
 ): Record<string, SessionDetail["channels"]> {
   const result: Record<string, SessionDetail["channels"]> = {};
-
   for (const ch of channels) {
     let matched = false;
     for (const [category, patterns] of Object.entries(CHANNEL_CATEGORIES)) {
@@ -525,6 +457,5 @@ function groupChannelsByCategory(
       result["Other"].push(ch);
     }
   }
-
   return result;
 }

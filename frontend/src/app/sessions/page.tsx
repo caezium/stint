@@ -24,6 +24,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { AnomalyBadge } from "@/components/anomaly-badge";
+import { SessionTagBadges } from "@/components/session-tag-badges";
+import { Select } from "@/components/ui/select";
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -146,26 +148,16 @@ export default function SessionsPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-md"
         />
-        <select
-          value={driverFilter}
-          onChange={(e) => setDriverFilter(e.target.value === "" ? "" : Number(e.target.value))}
-          className="bg-muted rounded px-2 text-sm"
-        >
-          <option value="">All drivers</option>
-          {drivers.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-        <select
-          value={vehicleFilter}
-          onChange={(e) => setVehicleFilter(e.target.value === "" ? "" : Number(e.target.value))}
-          className="bg-muted rounded px-2 text-sm"
-        >
-          <option value="">All vehicles</option>
-          {vehicles.map((v) => (
-            <option key={v.id} value={v.id}>{v.name}</option>
-          ))}
-        </select>
+        <Select<number>
+          value={driverFilter === "" ? -1 : driverFilter}
+          onValueChange={(v) => setDriverFilter(v === -1 ? "" : v)}
+          options={[{ value: -1, label: "All drivers" }, ...drivers.map((d) => ({ value: d.id, label: d.name }))]}
+        />
+        <Select<number>
+          value={vehicleFilter === "" ? -1 : vehicleFilter}
+          onValueChange={(v) => setVehicleFilter(v === -1 ? "" : v)}
+          options={[{ value: -1, label: "All vehicles" }, ...vehicles.map((v) => ({ value: v.id, label: v.name }))]}
+        />
       </div>
 
       {loading && (
@@ -271,8 +263,9 @@ export default function SessionsPage() {
                     {session.lap_count} laps
                   </Badge>
                 </div>
-                <div className="mb-2">
+                <div className="mb-2 space-y-1">
                   <AnomalyBadge sessionId={session.id} />
+                  <SessionTagBadges sessionId={session.id} />
                 </div>
                 <div className="space-y-1.5 text-sm text-muted-foreground">
                   <div className="flex justify-between">
