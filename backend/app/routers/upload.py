@@ -147,6 +147,36 @@ async def upload_file(file: UploadFile):
     except Exception as e:
         print(f"[debrief] generation failed for {result['session_id']}: {e}")
 
+    # Compute coaching points (T2.1). Non-fatal.
+    try:
+        from ..coaching import compute_session_coaching_points
+        await compute_session_coaching_points(result["session_id"])
+    except Exception as e:
+        print(f"[coaching] computation failed for {result['session_id']}: {e}")
+
+    # T4.1: evaluate the prior session's plan, then generate a new one. Both
+    # are best-effort and require an OpenRouter key to actually emit items.
+    try:
+        from ..plans import evaluate_prior_plan, generate_plan
+        await evaluate_prior_plan(result["session_id"])
+        await generate_plan(result["session_id"])
+    except Exception as e:
+        print(f"[plans] generation failed for {result['session_id']}: {e}")
+
+    # Auto-tag session (T2.6). Non-fatal.
+    try:
+        from ..tags import compute_session_tags
+        await compute_session_tags(result["session_id"])
+    except Exception as e:
+        print(f"[tags] computation failed for {result['session_id']}: {e}")
+
+    # Build proactive nudge (T3.3). Non-fatal.
+    try:
+        from .chat_assist import maybe_create_nudge
+        await maybe_create_nudge(result["session_id"])
+    except Exception as e:
+        print(f"[nudge] creation failed for {result['session_id']}: {e}")
+
     # Try to auto-match a track and, if it has an S/F line, apply it immediately.
     auto_track_applied = None
     try:
