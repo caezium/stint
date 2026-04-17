@@ -914,6 +914,10 @@ export interface Anomaly {
   channel: string | null;
   message: string;
   metric_value: number | null;
+  /** Lap-relative position of the offending sample, when known (T1.6). */
+  distance_pct?: number | null;
+  /** Lap-relative time of the offending sample, when known (T1.6). */
+  time_in_lap_ms?: number | null;
   created_at?: string;
 }
 
@@ -987,7 +991,7 @@ export interface DebriefCornerPerformance {
   score: number;
 }
 
-export interface DebriefWeatherCorrelation {
+export interface DebriefSessionTrend {
   lap_trend_slope_ms_per_lap: number;
   lap_trend_r: number;
   insight: string;
@@ -996,6 +1000,14 @@ export interface DebriefWeatherCorrelation {
     track_temp: number | null;
     air_temp: number | null;
   };
+}
+/** @deprecated use {@link DebriefSessionTrend}. */
+export type DebriefWeatherCorrelation = DebriefSessionTrend;
+
+export interface DebriefNarrative {
+  status: "pending" | "ready" | "failed";
+  summary: string;
+  action_items: string[];
 }
 
 export interface DebriefDrivingFingerprint {
@@ -1021,9 +1033,231 @@ export interface Debrief {
   lap_consistency: DebriefLapConsistency;
   sector_consistency: DebriefSectorConsistency[];
   corner_performance: DebriefCornerPerformance[];
-  weather_correlation: DebriefWeatherCorrelation | null;
+  /** Renamed in T1.8 — falls back to weather_correlation for older payloads. */
+  session_trend?: DebriefSessionTrend | null;
+  weather_correlation?: DebriefSessionTrend | null;
   driving_fingerprint: DebriefDrivingFingerprint | null;
+  narrative?: DebriefNarrative;
   _generated_at?: string;
+}
+
+/** Per-lap fingerprint history (T2.4) */
+export interface LapFingerprint {
+  lap_num: number;
+  throttle_smoothness: number | null;
+  braking_aggressiveness: number | null;
+  max_brake: number | null;
+  steering_smoothness: number | null;
+}
+
+export async function fetchPerLapFingerprints(sessionId: string): Promise<LapFingerprint[]> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/fingerprints?_t=${Date.now()}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { laps?: LapFingerprint[] };
+    return data.laps ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface FingerprintBenchmark {
+  p25: number | null;
+  p50: number | null;
+  p75: number | null;
+  n: number;
+}
+export type DriverFingerprintStats = Record<string, FingerprintBenchmark>;
+
+export async function fetchDriverFingerprintStats(driver: string): Promise<DriverFingerprintStats> {
+  try {
+    const res = await fetch(`/api/drivers/${encodeURIComponent(driver)}/fingerprint-stats`);
+    if (!res.ok) return {};
+    const data = (await res.json()) as { metrics?: DriverFingerprintStats };
+    return data.metrics ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export interface ProactiveNudge {
+  headline: string;
+  detail: string;
+  severity: "info" | "warning" | "critical";
+  prompt: string;
+}
+
+export async function fetchSessionNudge(sessionId: string): Promise<ProactiveNudge | null> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/nudge`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { nudge?: ProactiveNudge | null };
+    return data.nudge ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function dismissSessionNudge(sessionId: string): Promise<void> {
+  try {
+    await fetch(`/api/sessions/${sessionId}/nudge/dismiss`, { method: "POST" });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function fetchSessionTags(sessionId: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/tags`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { tags?: string[] };
+    return data.tags ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface ChatUsageStats {
+  total_tokens_in: number;
+  total_tokens_out: number;
+  month_tokens_in: number;
+  month_tokens_out: number;
+  message_count: number;
+  per_model: { model: string; n: number }[];
+}
+
+export async function backfillAllSessions(): Promise<{
+  session_count: number;
+  counts: Record<string, number>;
+  error_count: number;
+}> {
+  const res = await fetch("/api/admin/backfill", { method: "POST" });
+  if (!res.ok) throw new Error(`Backfill failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchChatUsage(): Promise<ChatUsageStats | null> {
+  try {
+    const res = await fetch("/api/chat/usage");
+    if (!res.ok) return null;
+    return (await res.json()) as ChatUsageStats;
+  } catch {
+    return null;
+  }
+}
+
+// ---- T4.1 — Coaching plan + memory ---------------------------------------
+
+export type FocusItemStatus = "open" | "improved" | "same" | "worse" | "abandoned";
+
+export interface FocusItemEvaluation {
+  before: number | null;
+  after: number | null;
+  delta: number | null;
+  target_value: number | null;
+}
+
+export interface FocusItem {
+  id: number;
+  item_text: string;
+  target_metric: string;
+  target_value: number | null;
+  status: FocusItemStatus;
+  evaluation?: FocusItemEvaluation | null;
+}
+
+export interface CoachingPlan {
+  plan_id: number;
+  session_id: string;
+  created_at: string;
+  items: FocusItem[];
+  prior_session_id?: string;
+}
+
+export interface CoachingPlanResponse {
+  plan: CoachingPlan | null;
+  prior: CoachingPlan | null;
+}
+
+export async function fetchCoachingPlan(sessionId: string): Promise<CoachingPlanResponse> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/coaching-plan`);
+    if (!res.ok) return { plan: null, prior: null };
+    return (await res.json()) as CoachingPlanResponse;
+  } catch {
+    return { plan: null, prior: null };
+  }
+}
+
+// ---- Driver analytics ----------------------------------------------------
+
+export interface DriverSummaryStats {
+  session_count: number;
+  venue_count: number;
+  total_laps: number;
+  overall_pb_ms: number | null;
+  overall_pb_session_id: string | null;
+  overall_pb_venue: string | null;
+  last_session_date: string | null;
+}
+
+export interface DriverVenuePB {
+  venue: string;
+  best_lap_ms: number;
+  session_id: string;
+  log_date: string | null;
+  session_count: number;
+}
+
+export interface DriverFingerprintPoint {
+  session_id: string;
+  log_date: string | null;
+  venue: string | null;
+  throttle_smoothness: number | null;
+  braking_aggressiveness: number | null;
+  max_brake: number | null;
+  steering_smoothness: number | null;
+}
+
+export interface DriverSessionRow {
+  id: string;
+  venue: string | null;
+  vehicle: string | null;
+  log_date: string | null;
+  log_time: string | null;
+  lap_count: number;
+  best_lap_time_ms: number | null;
+  total_duration_ms: number | null;
+  tags: string[];
+}
+
+export interface DriverSummary {
+  driver: string;
+  stats: DriverSummaryStats;
+  tag_counts: Record<string, number>;
+  pb_per_venue: DriverVenuePB[];
+  fingerprint_series: DriverFingerprintPoint[];
+  sessions: DriverSessionRow[];
+}
+
+export async function fetchDriverSummary(name: string): Promise<DriverSummary | null> {
+  try {
+    const res = await fetch(`/api/drivers/${encodeURIComponent(name)}/summary`);
+    if (!res.ok) return null;
+    return (await res.json()) as DriverSummary;
+  } catch {
+    return null;
+  }
+}
+
+export async function regenerateCoachingPlan(sessionId: string): Promise<CoachingPlanResponse> {
+  const res = await fetch(`/api/sessions/${sessionId}/coaching-plan/regenerate`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to regenerate coaching plan: ${res.status}`);
+  return (await res.json()) as CoachingPlanResponse;
 }
 
 export async function fetchDebrief(sessionId: string): Promise<Debrief> {
@@ -1051,24 +1285,40 @@ export interface ChatConversation {
   created_at: string;
   updated_at: string;
   message_count?: number;
+  /** Joined from sessions for use by the /chat sidebar. */
+  session_venue?: string | null;
+  session_driver?: string | null;
+  session_log_date?: string | null;
 }
 
-export type ChatRole = "user" | "assistant" | "tool";
+export type ChatRole = "user" | "assistant" | "tool" | "system";
 
-export interface ChatToolCall {
-  tool_use_id: string;
-  name: string;
-  input: Record<string, unknown>;
-  output?: unknown;
-  error?: string;
-}
-
-export interface ChatMessage {
-  id?: number;
-  role: ChatRole;
+/**
+ * AI SDK v5 UIMessage shape. We persist messages on the backend in this
+ * exact shape so the frontend can hydrate `useChat` without translation.
+ */
+export interface ChatUIMessagePart {
+  type: string; // "text" | "reasoning" | "tool-<name>" | etc.
   text?: string;
-  tool_calls?: ChatToolCall[];
-  created_at?: string;
+  toolCallId?: string;
+  toolName?: string;
+  state?: string;
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+  summary?: string;
+}
+
+export interface ChatUIMessage {
+  id: string;
+  role: ChatRole;
+  parts: ChatUIMessagePart[];
+  createdAt?: string;
+  metadata?: {
+    tokensIn?: number | null;
+    tokensOut?: number | null;
+    model?: string | null;
+  };
 }
 
 export async function createChatConversation(
@@ -1094,9 +1344,16 @@ export async function listChatConversations(
   return res.json();
 }
 
+/** List ALL conversations across the archive (for the dedicated /chat page). */
+export async function listAllChatConversations(): Promise<ChatConversation[]> {
+  const res = await fetch("/api/chat/conversations");
+  if (!res.ok) throw new Error(`Failed to list conversations: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchChatConversation(
   conversationId: number,
-): Promise<{ conversation: ChatConversation; messages: ChatMessage[] }> {
+): Promise<{ conversation: ChatConversation; messages: ChatUIMessage[] }> {
   const res = await fetch(`/api/chat/conversations/${conversationId}`);
   if (!res.ok) throw new Error(`Failed to fetch conversation: ${res.status}`);
   return res.json();
@@ -1109,74 +1366,26 @@ export async function deleteChatConversation(conversationId: number): Promise<vo
   if (!res.ok) throw new Error(`Failed to delete conversation: ${res.status}`);
 }
 
+/** Dynamic suggestion chips derived from session debrief + anomalies (T1.2). */
+export async function fetchChatSuggestions(sessionId: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/chat-suggestions`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { suggestions?: string[] };
+    return Array.isArray(data.suggestions) ? data.suggestions : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Stream a chat response. Server-sent events deliver progressive deltas as
- * JSON lines. The callback receives each parsed event — the caller is
- * responsible for appending text, displaying tool calls, etc.
+ * Stream a chat response — handled by `useChat` from @ai-sdk/react with a
+ * `DefaultChatTransport` pointed at /api/chat/message. Backend emits the
+ * v5 UI message stream protocol (`x-vercel-ai-ui-message-stream: v1`).
+ *
+ * The legacy custom SSE helper that lived here was removed during the
+ * AI SDK rebaseline (Phase 0).
  */
-export interface ChatStreamEvent {
-  type:
-    | "text_delta"
-    | "tool_use"
-    | "tool_result"
-    | "message_complete"
-    | "error"
-    | "status";
-  delta?: string;
-  tool_use_id?: string;
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-  tool_output?: unknown;
-  error?: string;
-  message_id?: number;
-  status?: string;
-}
-
-export async function streamChatMessage(
-  conversationId: number,
-  userMessage: string,
-  onEvent: (evt: ChatStreamEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch("/api/chat/message", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      conversation_id: conversationId,
-      message: userMessage,
-    }),
-    signal,
-  });
-  if (!res.ok || !res.body) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Chat stream failed: ${res.status} ${detail}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload) continue;
-      try {
-        const parsed = JSON.parse(payload) as ChatStreamEvent;
-        onEvent(parsed);
-      } catch {
-        // ignore malformed line
-      }
-    }
-  }
-}
 
 // ---- Track overlay ----
 
