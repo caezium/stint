@@ -8,7 +8,7 @@ from .database import init_db
 from .routers import (
     upload, sessions, channels, sectors, math_channels, layouts, profiles,
     export, compare, tracks, math_defaults, log_sheets, collections, reports, settings,
-    admin, anomalies, debrief, chat,
+    admin, anomalies, debrief, chat, chat_assist, drivers,
 )
 
 
@@ -46,6 +46,8 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(anomalies.router, prefix="/api")
 app.include_router(debrief.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(chat_assist.router, prefix="/api")
+app.include_router(drivers.router, prefix="/api")
 
 
 @app.get("/api/health")
