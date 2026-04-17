@@ -1,16 +1,20 @@
-"""Chat endpoints — conversations + streaming message agent."""
+"""Chat endpoints — conversations + streaming message agent (AI SDK v5)."""
 
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
 from ..database import get_db
-from ..llm_agent import run_chat_turn
+from ..llm_agent import (
+    UI_MESSAGE_STREAM_HEADERS,
+    maybe_autotitle_conversation,
+    run_chat_turn,
+)
 
 router = APIRouter()
 
@@ -52,53 +56,73 @@ async def create_conversation(req: CreateConversationRequest):
 
 
 @router.get("/chat/conversations")
-async def list_conversations(session_id: str = Query(...)):
+async def list_conversations(session_id: Optional[str] = Query(default=None)):
+    """List chat conversations. Defaults to all conversations across the
+    local archive (for the /chat page); pass ``session_id`` to scope to one
+    session (used by the in-session chat panel)."""
     db = await get_db()
     try:
-        cursor = await db.execute(
-            """SELECT c.id, c.session_id, c.title, c.created_at, c.updated_at,
-                      (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id) AS message_count
-               FROM chat_conversations c
-               WHERE c.session_id = ?
-               ORDER BY c.updated_at DESC""",
-            (session_id,),
+        base = (
+            "SELECT c.id, c.session_id, c.title, c.created_at, c.updated_at, "
+            "       (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id) AS message_count, "
+            "       s.venue AS session_venue, s.driver AS session_driver, "
+            "       s.log_date AS session_log_date "
+            "FROM chat_conversations c "
+            "LEFT JOIN sessions s ON s.id = c.session_id"
         )
+        if session_id:
+            cursor = await db.execute(
+                base + " WHERE c.session_id = ? ORDER BY c.updated_at DESC",
+                (session_id,),
+            )
+        else:
+            cursor = await db.execute(
+                base + " ORDER BY c.updated_at DESC LIMIT 500",
+            )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
     finally:
         await db.close()
 
 
-def _flatten_message(role: str, content_json: str) -> Optional[dict]:
-    """Convert stored message shapes into a UI-friendly flat object.
-
-    The agent persists:
-      user      → {"text": "..."}
-      assistant → {"text": "...", "tool_calls": [...]}
-    This also handles a couple of legacy shapes so older conversations
-    still render if the storage format has changed.
+def _to_ui_message(row_id: int, role: str, content_json: str, created_at: str) -> Optional[dict]:
+    """Project a stored row into an AI-SDK UIMessage. Handles both new and
+    legacy persistence shapes so old conversations keep rendering.
     """
     try:
         content = json.loads(content_json)
     except Exception:
         return None
 
-    if role == "user":
-        if isinstance(content, dict) and "text" in content:
-            return {"role": "user", "text": content.get("text") or None}
-        if isinstance(content, str):
-            return {"role": "user", "text": content or None}
-        if isinstance(content, list):
-            # Legacy Anthropic-style blocks
-            text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-            if not text_parts:
-                return None
-            return {"role": "user", "text": "\n".join(text_parts).strip() or None}
-        return None
+    # New shape persisted by llm_agent._save_uimessage
+    if isinstance(content, dict) and isinstance(content.get("parts"), list):
+        return {
+            "id": str(row_id),
+            "role": role,
+            "parts": content["parts"],
+            "createdAt": created_at,
+        }
 
-    if role == "assistant":
+    # ---- Legacy shapes ----
+    parts: list[dict] = []
+    if role == "user":
+        text = ""
+        if isinstance(content, dict) and "text" in content:
+            text = content.get("text") or ""
+        elif isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if text:
+            parts.append({"type": "text", "text": text})
+
+    elif role == "assistant":
         if isinstance(content, dict):
-            ui_calls = []
+            if content.get("text"):
+                parts.append({"type": "text", "text": content["text"]})
             for tc in content.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 args_raw = fn.get("arguments") or "{}"
@@ -106,38 +130,39 @@ def _flatten_message(role: str, content_json: str) -> Optional[dict]:
                     args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
                 except Exception:
                     args = {}
-                ui_calls.append({
-                    "tool_use_id": tc.get("id", ""),
-                    "name": fn.get("name", ""),
+                name = fn.get("name", "")
+                parts.append({
+                    "type": f"tool-{name}",
+                    "toolCallId": tc.get("id", ""),
+                    "toolName": name,
+                    "state": "input-available",
                     "input": args,
                 })
-            return {
-                "role": "assistant",
-                "text": content.get("text") or None,
-                "tool_calls": ui_calls or None,
-            }
-        if isinstance(content, list):
-            # Legacy shape
-            text_parts, tool_calls = [], []
+        elif isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
+                    parts.append({"type": "text", "text": block.get("text", "")})
                 elif block.get("type") == "tool_use":
-                    tool_calls.append({
-                        "tool_use_id": block.get("id", ""),
-                        "name": block.get("name", ""),
+                    name = block.get("name", "")
+                    parts.append({
+                        "type": f"tool-{name}",
+                        "toolCallId": block.get("id", ""),
+                        "toolName": name,
+                        "state": "input-available",
                         "input": block.get("input", {}),
                     })
-            return {
-                "role": "assistant",
-                "text": "\n".join(text_parts).strip() or None,
-                "tool_calls": tool_calls or None,
-            }
+
+    if not parts:
         return None
 
-    return None
+    return {
+        "id": str(row_id),
+        "role": role,
+        "parts": parts,
+        "createdAt": created_at,
+    }
 
 
 @router.get("/chat/conversations/{conversation_id}")
@@ -154,21 +179,25 @@ async def get_conversation(conversation_id: int):
         conversation = dict(row)
 
         cursor = await db.execute(
-            "SELECT id, role, content_json, created_at FROM chat_messages "
-            "WHERE conversation_id = ? ORDER BY id",
+            "SELECT id, role, content_json, created_at, tokens_in, tokens_out, model "
+            "FROM chat_messages WHERE conversation_id = ? ORDER BY id",
             (conversation_id,),
         )
         rows = await cursor.fetchall()
     finally:
         await db.close()
 
-    messages = []
+    messages: list[dict] = []
     for r in rows:
-        flat = _flatten_message(r["role"], r["content_json"])
-        if flat:
-            flat["id"] = r["id"]
-            flat["created_at"] = r["created_at"]
-            messages.append(flat)
+        ui = _to_ui_message(r["id"], r["role"], r["content_json"], r["created_at"])
+        if ui:
+            # Decorate with token usage for cost display (T3.7)
+            ui["metadata"] = {
+                "tokensIn": r["tokens_in"],
+                "tokensOut": r["tokens_out"],
+                "model": r["model"],
+            }
+            messages.append(ui)
     return {"conversation": conversation, "messages": messages}
 
 
@@ -194,30 +223,88 @@ async def delete_conversation(conversation_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Streaming message endpoint
+# Streaming message endpoint (AI SDK v5 UI message stream)
 # ---------------------------------------------------------------------------
+
+
+class ChatContext(BaseModel):
+    pinned_lap: Optional[int] = None
+    pinned_distance_m: Optional[float] = None
+    visible_channels: Optional[list[str]] = None
+    zoom_range: Optional[list[float]] = None  # [min, max] in seconds or meters
 
 
 class ChatMessageRequest(BaseModel):
     conversation_id: int
     message: str
+    context: Optional[ChatContext] = None
 
 
 @router.post("/chat/message")
-async def send_message(req: ChatMessageRequest):
+async def send_message(req: ChatMessageRequest, request: Request):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
 
+    chat_context = req.context.model_dump() if req.context else None
+
     async def stream():
-        async for frame in run_chat_turn(req.conversation_id, req.message):
+        async for frame in run_chat_turn(
+            req.conversation_id,
+            req.message,
+            chat_context=chat_context,
+            is_disconnected=request.is_disconnected,
+        ):
             yield frame
+        # Fire-and-forget auto-titling after the first user message
+        try:
+            await maybe_autotitle_conversation(req.conversation_id, req.message)
+        except Exception:
+            pass
 
     return StreamingResponse(
         stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=UI_MESSAGE_STREAM_HEADERS,
     )
+
+
+# ---------------------------------------------------------------------------
+# Conversation export as Markdown (T3.6)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/chat/conversations/{conversation_id}/export.md")
+async def export_conversation_markdown(conversation_id: int):
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT title, created_at FROM chat_conversations WHERE id = ?",
+            (conversation_id,),
+        )
+        conv = await cur.fetchone()
+        if not conv:
+            raise HTTPException(404, "Conversation not found")
+        cur = await db.execute(
+            "SELECT id, role, content_json, created_at FROM chat_messages "
+            "WHERE conversation_id = ? ORDER BY id",
+            (conversation_id,),
+        )
+        rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    lines: list[str] = [f"# {conv['title'] or 'Stint chat'}", "", f"_{conv['created_at']}_", ""]
+    for r in rows:
+        ui = _to_ui_message(r["id"], r["role"], r["content_json"], r["created_at"])
+        if not ui:
+            continue
+        who = "**You**" if ui["role"] == "user" else "**Stint**"
+        lines.append(who)
+        for p in ui["parts"]:
+            t = p.get("type", "")
+            if t == "text":
+                lines.append(p.get("text", ""))
+            elif t.startswith("tool-"):
+                summary = p.get("summary") or p.get("toolName", t)
+                lines.append(f"> tool · {p.get('toolName', '')} — {summary}")
+        lines.append("")
+    return Response(content="\n".join(lines), media_type="text/markdown")

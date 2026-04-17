@@ -94,6 +94,26 @@ async def export_pdf(session_id: str, lap: Optional[int] = Query(None)):
     )
     story.append(Spacer(1, 12))
 
+    # T3.6: include the LLM-generated coach summary if it's ready
+    try:
+        from ..debrief import get_cached_debrief
+        debrief = await get_cached_debrief(session_id)
+        narrative = (debrief or {}).get("narrative") or {}
+        if narrative.get("status") == "ready" and (narrative.get("summary") or narrative.get("action_items")):
+            story.append(Paragraph("Coach summary", styles["Heading3"]))
+            if narrative.get("summary"):
+                story.append(Paragraph(narrative["summary"], styles["Normal"]))
+                story.append(Spacer(1, 6))
+            items = narrative.get("action_items") or []
+            if items:
+                story.append(Paragraph("<b>Focus for next session:</b>", styles["Normal"]))
+                for it in items:
+                    story.append(Paragraph(f"• {it}", styles["Normal"]))
+            story.append(Spacer(1, 12))
+    except Exception:
+        # Narrative is optional decoration — never block the report
+        pass
+
     if laps:
         best = min(laps, key=lambda l: l["duration_ms"])
         story.append(
