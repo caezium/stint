@@ -444,13 +444,26 @@ async def generate_debrief(session_id: str) -> dict:
     # Persist the stats payload first so the UI has something to render
     await _persist_debrief(session_id, debrief)
 
-    # T1.1: kick off the LLM narrative as a background task.
+    # T1.1: narrative generation used to be fire-and-forget, which meant a
+    # failure inside the task was silently swallowed and the user had to hit
+    # "Regenerate debrief" to see anything. We now `await` it and persist
+    # the narrative's status so the UI can show a proper error + retry pill.
     try:
-        import asyncio as _asyncio
         from . import narrative as _narrative
-        _asyncio.create_task(_narrative.generate_and_persist_narrative(session_id, debrief))
+        await _narrative.generate_and_persist_narrative(session_id, debrief)
     except Exception as e:
-        print(f"[debrief] narrative scheduling failed for {session_id}: {e}")
+        print(f"[debrief] narrative generation failed for {session_id}: {e}")
+        # Flip status to 'error' so the UI stops shimmering and shows a retry.
+        try:
+            debrief["narrative"] = {
+                "status": "error",
+                "summary": "",
+                "action_items": [],
+                "error": str(e)[:200],
+            }
+            await _persist_debrief(session_id, debrief)
+        except Exception:
+            pass
 
     return debrief
 

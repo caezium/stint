@@ -207,56 +207,81 @@ async def generate_plan(session_id: str) -> Optional[dict]:
         return None
     items: list[dict] = []
     try:
-        try:
-            resp = await client.chat.completions.create(
-                model=FAST_MODEL,
-                max_tokens=400,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": _build_user_prompt(metrics, debrief, coaching_points)},
-                ],
-                response_format={"type": "json_object"},
-            )
-            raw = (resp.choices[0].message.content or "").strip()
-            # Some providers return json inside a fenced block even with
-            # response_format=json_object — try both raw and stripped fences.
+        data = None
+        last_err: Optional[Exception] = None
+        # Up to 2 attempts: first regular, then one retry with an explicit
+        # "ONLY JSON, no markdown" nudge. Silent plan failures are one of the
+        # top reported bugs, so a single retry is worth the latency.
+        for attempt in range(2):
+            system_msg = SYSTEM_PROMPT
+            if attempt == 1:
+                system_msg = (
+                    SYSTEM_PROMPT
+                    + "\n\nReturn ONLY a JSON object. No markdown, no code fences, no prose."
+                )
             try:
-                data = json.loads(raw)
-            except Exception:
-                stripped = raw.strip("`\n")
-                if stripped.lower().startswith("json"):
-                    stripped = stripped[4:].lstrip()
-                data = json.loads(stripped)
-            print(f"[plans] LLM returned {len(data.get('items') or [])} items: {raw[:200]}")
-            for it in (data.get("items") or [])[:5]:
-                metric = str(it.get("target_metric", "")).strip()
-                # Normalize near-matches: "best_lap" → "best_lap_ms" etc.
-                if metric and metric not in SUPPORTED_METRICS:
-                    for canon in SUPPORTED_METRICS:
-                        if canon.startswith(metric) or metric.startswith(canon.rsplit("_", 1)[0]):
-                            metric = canon
-                            break
-                text = str(it.get("item_text", "")).strip()
-                if not text:
-                    continue
-                # target_value is informational — store even if we can't coerce,
-                # so the item still renders and the user sees the guidance.
+                resp = await client.chat.completions.create(
+                    model=FAST_MODEL,
+                    max_tokens=400,
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": _build_user_prompt(metrics, debrief, coaching_points)},
+                    ],
+                    response_format={"type": "json_object"},
+                )
+                raw = (resp.choices[0].message.content or "").strip()
+                # Some providers return json inside a fenced block even with
+                # response_format=json_object — try both raw and stripped fences.
                 try:
-                    target = float(it.get("target_value"))
+                    data = json.loads(raw)
                 except Exception:
-                    target = None
-                items.append({
-                    "item_text": text[:200],
-                    "target_metric": metric or "general",
-                    "target_value": target if target is not None else 0.0,
-                })
-        finally:
+                    stripped = raw.strip("`\n")
+                    if stripped.lower().startswith("json"):
+                        stripped = stripped[4:].lstrip()
+                    try:
+                        data = json.loads(stripped)
+                    except Exception:
+                        # Last-ditch: regex for the outermost {...}
+                        import re as _re
+                        m = _re.search(r"\{[\s\S]*\}", raw)
+                        if m:
+                            data = json.loads(m.group(0))
+                if data is not None:
+                    break
+            except Exception as e:
+                last_err = e
+        if data is None:
+            if last_err:
+                print(f"[plans] LLM call failed after retry: {last_err}")
+            return None
+        print(f"[plans] LLM returned {len(data.get('items') or [])} items")
+        for it in (data.get("items") or [])[:5]:
+            metric = str(it.get("target_metric", "")).strip()
+            # Normalize near-matches: "best_lap" → "best_lap_ms" etc.
+            if metric and metric not in SUPPORTED_METRICS:
+                for canon in SUPPORTED_METRICS:
+                    if canon.startswith(metric) or metric.startswith(canon.rsplit("_", 1)[0]):
+                        metric = canon
+                        break
+            text = str(it.get("item_text", "")).strip()
+            if not text:
+                continue
+            # target_value is informational — store even if we can't coerce,
+            # so the item still renders and the user sees the guidance.
             try:
-                await client.close()
+                target = float(it.get("target_value"))
             except Exception:
-                pass
-    except Exception:
-        return None
+                target = None
+            items.append({
+                "item_text": text[:200],
+                "target_metric": metric or "general",
+                "target_value": target if target is not None else 0.0,
+            })
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
 
     if not items:
         return None

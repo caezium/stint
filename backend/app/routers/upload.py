@@ -9,14 +9,52 @@ router = APIRouter()
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 
+async def _upsert_driver(db, name: str) -> int | None:
+    """Idempotently create or fetch a driver row keyed by name. Returns id."""
+    if not name or not name.strip():
+        return None
+    name = name.strip()
+    cur = await db.execute("SELECT id FROM drivers WHERE name = ?", (name,))
+    row = await cur.fetchone()
+    if row:
+        return int(row[0])
+    cur = await db.execute(
+        "INSERT INTO drivers (name, weight_kg) VALUES (?, 0)", (name,)
+    )
+    return int(cur.lastrowid)
+
+
+async def _upsert_vehicle(db, name: str) -> int | None:
+    if not name or not name.strip():
+        return None
+    name = name.strip()
+    cur = await db.execute("SELECT id FROM vehicles WHERE name = ?", (name,))
+    row = await cur.fetchone()
+    if row:
+        return int(row[0])
+    cur = await db.execute(
+        "INSERT INTO vehicles (name, class, engine) VALUES (?, '', '')", (name,)
+    )
+    return int(cur.lastrowid)
+
+
 async def persist_session(db, result: dict) -> None:
-    """Upsert a parsed session and replace its child metadata atomically."""
+    """Upsert a parsed session and replace its child metadata atomically.
+
+    Also auto-creates driver and vehicle rows (keyed by name) and links
+    session.driver_id / session.vehicle_id so the /sessions filter dropdowns
+    have something to show.
+    """
+    driver_id = await _upsert_driver(db, result.get("driver", ""))
+    vehicle_id = await _upsert_vehicle(db, result.get("vehicle", ""))
+
     await db.execute(
         """INSERT INTO sessions
            (id, file_name, driver, vehicle, venue, log_date, log_time,
             session_name, series, logger_model, logger_id,
-            lap_count, best_lap_time_ms, total_duration_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            lap_count, best_lap_time_ms, total_duration_ms,
+            driver_id, vehicle_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              file_name = excluded.file_name,
              driver = excluded.driver,
@@ -30,14 +68,17 @@ async def persist_session(db, result: dict) -> None:
              logger_id = excluded.logger_id,
              lap_count = excluded.lap_count,
              best_lap_time_ms = excluded.best_lap_time_ms,
-             total_duration_ms = excluded.total_duration_ms""",
+             total_duration_ms = excluded.total_duration_ms,
+             driver_id = excluded.driver_id,
+             vehicle_id = excluded.vehicle_id""",
         (result["session_id"], result.get("file_name", ""),
          result.get("driver", ""), result.get("vehicle", ""),
          result.get("venue", ""), result.get("log_date", ""),
          result.get("log_time", ""), result.get("session_name", ""),
          result.get("series", ""), result.get("logger_model", ""),
          result.get("logger_id", 0), result.get("lap_count", 0),
-         result.get("best_lap_time_ms", 0), result.get("total_duration_ms", 0))
+         result.get("best_lap_time_ms", 0), result.get("total_duration_ms", 0),
+         driver_id, vehicle_id)
     )
 
     # Refresh child rows so cache/schema updates do not leave stale records behind.
@@ -154,14 +195,20 @@ async def upload_file(file: UploadFile):
     except Exception as e:
         print(f"[coaching] computation failed for {result['session_id']}: {e}")
 
-    # T4.1: evaluate the prior session's plan, then generate a new one. Both
-    # are best-effort and require an OpenRouter key to actually emit items.
+    # T4.1: evaluate the prior session's plan synchronously (cheap, DB-only),
+    # then enqueue plan generation as a job — the LLM call can take 5-10s and
+    # we don't want to block the upload request on it. The job_runs row lets
+    # the UI show a spinner and retry.
     try:
-        from ..plans import evaluate_prior_plan, generate_plan
+        from ..plans import evaluate_prior_plan
         await evaluate_prior_plan(result["session_id"])
-        await generate_plan(result["session_id"])
     except Exception as e:
-        print(f"[plans] generation failed for {result['session_id']}: {e}")
+        print(f"[plans] prior-plan evaluation failed for {result['session_id']}: {e}")
+    try:
+        from ..jobs import enqueue_job
+        await enqueue_job("plan", result["session_id"])
+    except Exception as e:
+        print(f"[plans] enqueue failed for {result['session_id']}: {e}")
 
     # Auto-tag session (T2.6). Non-fatal.
     try:
