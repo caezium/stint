@@ -370,6 +370,209 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Lap annotations — driver-authored notes anchored to a (session, lap,
+    # distance_pct) tuple so the chart can overlay dots and the chat agent can
+    # surface the notes in replies.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS lap_annotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            lap_num INTEGER NOT NULL,
+            distance_pct REAL,
+            time_in_lap_ms INTEGER,
+            author TEXT DEFAULT '',
+            body TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_session "
+        "ON lap_annotations(session_id, lap_num)"
+    )
+
+    # Proposals (Phase 8) — layout / math_channel proposals from the chat agent
+    # that the user can Apply or Reject. Replaces the "[proposed] " prefix
+    # convention on layouts and the user_settings:math_proposal:{id} hack.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            source TEXT NOT NULL DEFAULT 'chat',
+            created_at TEXT DEFAULT (datetime('now')),
+            applied_at TEXT,
+            rejected_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proposals_session_status "
+        "ON proposals(session_id, status)"
+    )
+
+    # Persistent job queue (Phase 9) — replaces asyncio fire-and-forget for
+    # narrative/plan/auto-title/backfill so work survives a server restart.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS job_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            started_at TEXT,
+            finished_at TEXT,
+            error_message TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_job_runs_status "
+        "ON job_runs(status, kind)"
+    )
+    # Crash safety — any job that claimed 'running' at shutdown can be reset
+    # to 'pending' on the next startup so the worker picks it back up.
+    await db.execute(
+        "UPDATE job_runs SET status='pending' "
+        "WHERE status='running' AND started_at < datetime('now','-5 minutes')"
+    )
+
+    # Share tokens (Phase 6) — read-only /share/sessions/[token] links for
+    # sending to coaches without auth.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS share_tokens (
+            token TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'session',
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT,
+            revoked_at TEXT,
+            view_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Backfill drivers / vehicles from legacy sessions whose rows were written
+    # before the upload pipeline auto-upserted driver_id / vehicle_id. Runs at
+    # every startup; idempotent because of the LEFT JOIN check on NULL ids.
+    await _backfill_driver_vehicle_ids(db)
+
+    # One-shot migration of legacy chat-agent proposals into the proposals
+    # table. Idempotent — matches legacy rows by their distinct naming.
+    try:
+        await _migrate_proposals_one_shot(db)
+    except Exception as e:
+        print(f"[migration] proposals migration failed: {e}")
+
+
+async def _migrate_proposals_one_shot(db: aiosqlite.Connection) -> None:
+    """Move legacy [proposed] layouts and math_proposal user_settings into
+    the proposals table. Idempotent — runs at every startup, but only acts on
+    rows that haven't been migrated yet. Orphaned legacy rows whose session no
+    longer exists are dropped silently (no FK violation).
+    """
+    import json as _json
+
+    async def _session_exists(sid: str) -> bool:
+        c = await db.execute("SELECT 1 FROM sessions WHERE id = ?", (sid,))
+        return (await c.fetchone()) is not None
+
+    # Legacy layouts: name starts with "[proposed] "
+    cur = await db.execute(
+        "SELECT id, name, config_json FROM layouts WHERE name LIKE '[proposed]%'"
+    )
+    rows = await cur.fetchall()
+    cols = await db.execute("PRAGMA table_info(layouts)")
+    layout_cols = {r[1] for r in await cols.fetchall()}
+    has_sid_col = "session_id" in layout_cols
+    for row in rows:
+        try:
+            cfg = _json.loads(row["config_json"] or "null")
+        except Exception:
+            cfg = None
+        sid: str | None = None
+        if has_sid_col:
+            cur2 = await db.execute(
+                "SELECT session_id FROM layouts WHERE id = ?", (row["id"],)
+            )
+            r2 = await cur2.fetchone()
+            sid = r2[0] if r2 else None
+        if isinstance(cfg, dict) and sid and await _session_exists(sid):
+            charts = cfg.get("charts") or []
+            name = row["name"].replace("[proposed]", "", 1).strip() or "Legacy proposal"
+            await db.execute(
+                """INSERT INTO proposals (session_id, kind, payload_json, source, status)
+                   VALUES (?, 'layout', ?, 'chat', 'pending')""",
+                (sid, _json.dumps({"name": name, "charts": charts})),
+            )
+        # Drop the legacy layout row whether we migrated it or not.
+        await db.execute("DELETE FROM layouts WHERE id = ?", (row["id"],))
+
+    # Legacy user_settings math_proposal entries
+    cur = await db.execute(
+        "SELECT key, value FROM user_settings WHERE key LIKE 'math_proposal:%'"
+    )
+    ms_rows = await cur.fetchall()
+    for r in ms_rows:
+        try:
+            items = _json.loads(r["value"] or "[]") or []
+        except Exception:
+            items = []
+        sid = r["key"].split(":", 1)[1] if ":" in r["key"] else None
+        if sid and await _session_exists(sid):
+            for it in items:
+                name = (it.get("name") or "").strip()[:60]
+                formula = (it.get("expression") or it.get("formula") or "").strip()
+                if not name or not formula:
+                    continue
+                await db.execute(
+                    """INSERT INTO proposals (session_id, kind, payload_json, source, status)
+                       VALUES (?, 'math_channel', ?, 'chat', 'pending')""",
+                    (sid, _json.dumps({"name": name, "formula": formula, "units": ""})),
+                )
+        await db.execute("DELETE FROM user_settings WHERE key = ?", (r["key"],))
+
+
+async def _backfill_driver_vehicle_ids(db: aiosqlite.Connection) -> None:
+    """Populate sessions.driver_id / vehicle_id for rows missing the link."""
+    # Drivers
+    cur = await db.execute(
+        "SELECT DISTINCT driver FROM sessions WHERE driver IS NOT NULL AND TRIM(driver) != '' AND driver_id IS NULL"
+    )
+    names = [row[0] for row in await cur.fetchall()]
+    for name in names:
+        name = name.strip()
+        if not name:
+            continue
+        cur = await db.execute("SELECT id FROM drivers WHERE name = ?", (name,))
+        row = await cur.fetchone()
+        if row:
+            did = int(row[0])
+        else:
+            cur = await db.execute("INSERT INTO drivers (name, weight_kg) VALUES (?, 0)", (name,))
+            did = int(cur.lastrowid)
+        await db.execute("UPDATE sessions SET driver_id = ? WHERE driver = ? AND driver_id IS NULL", (did, name))
+
+    # Vehicles
+    cur = await db.execute(
+        "SELECT DISTINCT vehicle FROM sessions WHERE vehicle IS NOT NULL AND TRIM(vehicle) != '' AND vehicle_id IS NULL"
+    )
+    names = [row[0] for row in await cur.fetchall()]
+    for name in names:
+        name = name.strip()
+        if not name:
+            continue
+        cur = await db.execute("SELECT id FROM vehicles WHERE name = ?", (name,))
+        row = await cur.fetchone()
+        if row:
+            vid = int(row[0])
+        else:
+            cur = await db.execute("INSERT INTO vehicles (name, class, engine) VALUES (?, '', '')", (name,))
+            vid = int(cur.lastrowid)
+        await db.execute("UPDATE sessions SET vehicle_id = ? WHERE vehicle = ? AND vehicle_id IS NULL", (vid, name))
+
 
 async def init_db():
     db = await get_db()
