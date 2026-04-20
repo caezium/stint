@@ -60,6 +60,8 @@ interface ChartConfig {
   type: ChartType;
   channels: string[];
   options?: Record<string, unknown>;
+  /** Hide the tile without deleting it. Persisted in localStorage. */
+  hidden?: boolean;
 }
 
 const CHART_TYPE_LABELS: Record<ChartType, string> = {
@@ -107,12 +109,74 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     return defaultCharts();
   });
 
+  // Layout lock — when true, chart drag-to-reorder is disabled. Persisted.
+  const [layoutLocked, setLayoutLocked] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem(`stint-layout-locked-${sessionId}`) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `stint-layout-locked-${sessionId}`,
+        layoutLocked ? "1" : "0",
+      );
+    } catch {}
+  }, [layoutLocked, sessionId]);
+
+  // Track map visibility — hide to give the channel browser the full rail.
+  const [trackMapVisible, setTrackMapVisible] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const v = localStorage.getItem(`stint-trackmap-visible-${sessionId}`);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `stint-trackmap-visible-${sessionId}`,
+        trackMapVisible ? "1" : "0",
+      );
+    } catch {}
+  }, [trackMapVisible, sessionId]);
+
+  // Per-chart hide toggle (doesn't remove the chart, just collapses the body)
+  function toggleChartHidden(id: string) {
+    setCharts((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, hidden: !c.hidden } : c)),
+    );
+  }
+
   // Persist charts to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(`stint-charts-${sessionId}`, JSON.stringify(charts));
     } catch {}
   }, [charts, sessionId]);
+
+  // T4.2 — listen for layout proposals applied from the chat panel and
+  // hot-swap the workspace layout without a refresh.
+  useEffect(() => {
+    function onApplied(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { sessionId: string; charts: ChartConfig[] }
+        | undefined;
+      if (!detail || detail.sessionId !== sessionId) return;
+      if (Array.isArray(detail.charts) && detail.charts.length > 0) {
+        setCharts(detail.charts);
+      }
+    }
+    window.addEventListener("stint:layout-applied", onApplied as EventListener);
+    return () => {
+      window.removeEventListener("stint:layout-applied", onApplied as EventListener);
+    };
+  }, [sessionId]);
 
   // Persist x-axis mode
   useEffect(() => {
@@ -617,6 +681,32 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
           f(x) Math
         </button>
 
+        {/* Lock / unlock chart layout */}
+        <button
+          onClick={() => setLayoutLocked((v) => !v)}
+          className={`px-2 py-0.5 rounded transition-colors ${
+            layoutLocked
+              ? "bg-amber-500/20 text-amber-300"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+          title={layoutLocked ? "Unlock layout (enable drag)" : "Lock layout (disable drag)"}
+        >
+          {layoutLocked ? "🔒 Locked" : "🔓 Lock"}
+        </button>
+
+        {/* Show / hide track map */}
+        <button
+          onClick={() => setTrackMapVisible((v) => !v)}
+          className={`px-2 py-0.5 rounded transition-colors ${
+            trackMapVisible
+              ? "text-muted-foreground hover:text-foreground"
+              : "bg-muted text-foreground"
+          }`}
+          title={trackMapVisible ? "Hide track map" : "Show track map"}
+        >
+          {trackMapVisible ? "🗺 Map" : "🗺 Show map"}
+        </button>
+
         <div className="w-px h-4 bg-border" />
 
         {/* Export CSV */}
@@ -707,33 +797,38 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                     <ChannelBrowser
                       activeChannels={allActiveChannels}
                       onToggleChannel={handleToggleChannel}
+                      sessionId={sessionId}
                     />
                   </div>
                 )}
               </div>
             </Panel>
-            <Separator className="h-1.5 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />
-            {/* Mini track map */}
-            <Panel id="trackmap" defaultSize="25%" minSize="10%">
-              <div className="h-full p-2">
-                {convertedMapTraces.length > 0 ? (
-                  <TrackMap
-                    laps={convertedMapTraces}
-                    valueLabel={valueLabel}
-                    valueUnits={valueUnits}
-                    sfLine={sfLineForMap}
-                    splitLines={splitsForMap}
-                    interactive
-                    gpsOffset={gpsOffset}
-                    onGpsOffsetChange={setGpsOffset}
-                  />
-                ) : (
-                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                    No track data
+            {trackMapVisible && (
+              <>
+                <Separator className="h-1.5 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />
+                {/* Mini track map */}
+                <Panel id="trackmap" defaultSize="25%" minSize="10%">
+                  <div className="h-full p-2">
+                    {convertedMapTraces.length > 0 ? (
+                      <TrackMap
+                        laps={convertedMapTraces}
+                        valueLabel={valueLabel}
+                        valueUnits={valueUnits}
+                        sfLine={sfLineForMap}
+                        splitLines={splitsForMap}
+                        interactive
+                        gpsOffset={gpsOffset}
+                        onGpsOffsetChange={setGpsOffset}
+                      />
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                        No track data
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </Panel>
+                </Panel>
+              </>
+            )}
           </Group>
         </Panel>
 
@@ -751,16 +846,20 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                 <div
                   key={chart.id}
                   className="relative group"
-                  draggable
-                  onDragStart={handleDragStart(idx)}
                   onDragOver={handleDragOver(idx)}
                   onDrop={handleDrop(idx)}
                 >
-                  {/* Chart header */}
+                  {/* Chart header — ONLY the ⠿ handle is draggable so the
+                      chart body is free for uPlot's drag-to-zoom.
+                      When layout is locked the handle is inert. */}
                   <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
                     <span
-                      className="cursor-grab active:cursor-grabbing select-none opacity-40 group-hover:opacity-100"
-                      title="Drag to reorder"
+                      draggable={!layoutLocked}
+                      onDragStart={layoutLocked ? undefined : handleDragStart(idx)}
+                      className={`select-none opacity-40 group-hover:opacity-100 px-1 ${
+                        layoutLocked ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing"
+                      }`}
+                      title={layoutLocked ? "Layout is locked" : "Drag to reorder"}
                     >
                       ⠿
                     </span>
@@ -776,8 +875,15 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                       </span>
                     ))}
                     <button
+                      onClick={() => toggleChartHidden(chart.id)}
+                      className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground px-1 text-[10px]"
+                      title={chart.hidden ? "Show chart" : "Collapse chart"}
+                    >
+                      {chart.hidden ? "▸" : "▾"}
+                    </button>
+                    <button
                       onClick={() => handleRemoveChart(chart.id)}
-                      className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground px-1"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground px-1"
                       title="Remove chart"
                     >
                       ✕
@@ -785,28 +891,30 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                   </div>
 
                   {/* Chart body (drop target for channels) */}
-                  <div
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "copy";
-                    }}
-                    onDrop={(e) => {
-                      const chName = e.dataTransfer.getData(
-                        "application/x-channel"
-                      );
-                      if (chName) {
+                  {!chart.hidden && (
+                    <div
+                      onDragOver={(e) => {
                         e.preventDefault();
-                        e.stopPropagation();
-                        handleDropChannel(chart.id, chName);
-                      }
-                    }}
-                  >
-                    <ChartRenderer
-                      chart={chart}
-                      sessionId={sessionId}
-                      height={chartHeight}
-                    />
-                  </div>
+                        e.dataTransfer.dropEffect = "copy";
+                      }}
+                      onDrop={(e) => {
+                        const chName = e.dataTransfer.getData(
+                          "application/x-channel"
+                        );
+                        if (chName) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleDropChannel(chart.id, chName);
+                        }
+                      }}
+                    >
+                      <ChartRenderer
+                        chart={chart}
+                        sessionId={sessionId}
+                        height={chartHeight}
+                      />
+                    </div>
+                  )}
                 </div>
               ))
             )}
