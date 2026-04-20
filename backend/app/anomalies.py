@@ -127,12 +127,25 @@ def _detect_cooling_trend(
     return results
 
 
+_INTERNAL_BATTERY_RE = __import__("re").compile(
+    r"internal\s*battery|logger\s*battery|backup\s*battery|ecu\s*internal",
+    __import__("re").IGNORECASE,
+)
+
+
 def _detect_voltage_sag(
     session_id: str, channels: list[str], laps: list[dict]
 ) -> list[Anomaly]:
     ch = _match_channel(channels, ["Battery", "BattVolt", " Voltage"])
     if not ch:
         return []
+
+    # Skip AiM-logger internal/backup cells — they run at ~3.7V (LiFePO4) and
+    # are not the vehicle system. A 3.7V reading from "Internal Battery" is
+    # normal, not a critical alternator fault.
+    if _INTERNAL_BATTERY_RE.search(ch):
+        return []
+
     read = _read_channel_with_time(session_id, ch)
     if read is None:
         return []
@@ -151,6 +164,12 @@ def _detect_voltage_sag(
     vmax = float(np.max(good))
     vmean = float(np.mean(good))
     vmin_ts = float(good_ts[vmin_idx_in_good])
+
+    # If the peak observed voltage is below 10V, we're not looking at a 12V
+    # system — this is a logger internal cell that slipped past the name
+    # filter. Don't emit car-centric thresholds against it.
+    if vmax < 10.0:
+        return []
 
     lap_num, pct, in_lap = _lap_pct_for_timestamp(laps, vmin_ts)
 
@@ -302,7 +321,13 @@ def _detect_lap_inconsistency(laps: list[dict]) -> list[Anomaly]:
 def _detect_rpm_dropouts(
     session_id: str, channels: list[str], laps: list[dict]
 ) -> list[Anomaly]:
-    """Sharp RPM drops while under load — fuel starvation proxy."""
+    """Sharp RPM drops while under load — fuel starvation proxy.
+
+    Karting-aware: thresholds scale with peak RPM so that a 15000 RPM kart
+    motor's routine driver-lifts aren't mistaken for misfires. When a
+    throttle channel is available, only count drops that happen while
+    throttle is >50% (real fuel starvation, not lifting into a corner).
+    """
     rpm_ch = _match_channel(channels, ["RPM"])
     if not rpm_ch:
         return []
@@ -319,11 +344,43 @@ def _detect_rpm_dropouts(
         return []
     window = max(1, int(200 / dt_avg))
 
+    # Scale thresholds by peak RPM. A kart at 15000 RPM drops 3000+ RPM every
+    # time the driver lifts; that's not a fault.
+    peak_rpm = float(np.percentile(rpm, 99)) if len(rpm) >= 100 else 0.0
+    drop_threshold = max(2000.0, 0.20 * peak_rpm)
+    initial_threshold = max(4000.0, 0.35 * peak_rpm)
+
+    # Try to read throttle so we can mask out driver-lift events.
+    throttle_mask_fn = None
+    thr_ch = _match_channel(channels, ["Throttle", "TPS", "Pedal Pos"])
+    if thr_ch:
+        thr_read = _read_channel_with_time(session_id, thr_ch)
+        if thr_read is not None:
+            thr_ts, thr_vals = thr_read
+            # Normalise to 0-100 if it looks like 0-1.
+            if len(thr_vals) > 0 and float(np.nanmax(thr_vals)) <= 1.5:
+                thr_vals = thr_vals * 100.0
+
+            def throttle_at(t: float) -> float:
+                idx = int(np.searchsorted(thr_ts, t))
+                if idx >= len(thr_vals):
+                    idx = len(thr_vals) - 1
+                return float(thr_vals[idx])
+
+            throttle_mask_fn = throttle_at
+
     drops = 0
     first_drop_ts: Optional[float] = None
     i = 0
     while i < len(rpm) - window:
-        if rpm[i] > 4000 and rpm[i + window] < rpm[i] - 2000:
+        if rpm[i] > initial_threshold and rpm[i + window] < rpm[i] - drop_threshold:
+            # If throttle data is available, require throttle > 50% at the
+            # start of the drop — otherwise the driver is just lifting.
+            if throttle_mask_fn is not None:
+                thr = throttle_mask_fn(float(ts[i]))
+                if thr < 50.0:
+                    i += 1
+                    continue
             drops += 1
             if first_drop_ts is None:
                 first_drop_ts = float(ts[i])
@@ -331,17 +388,20 @@ def _detect_rpm_dropouts(
         else:
             i += 1
 
-    if drops >= 3:
+    # Raise the minimum count; karts are noisy.
+    if drops >= 5:
         lap_num, pct, in_lap = (None, None, None)
         if first_drop_ts is not None:
             lap_num, pct, in_lap = _lap_pct_for_timestamp(laps, first_drop_ts)
+        # Severity: only elevate to warning if the drop pattern is extreme.
+        severity = "warning" if drops >= 10 else "info"
         return [
             Anomaly(
                 type="rpm_dropout",
-                severity="warning",
+                severity=severity,
                 lap_num=lap_num,
                 channel=rpm_ch,
-                message=f"Detected {drops} sharp RPM drops >2000 in <200ms — possible fuel starvation or misfire.",
+                message=f"Detected {drops} sharp RPM drops >{drop_threshold:.0f} in <200ms while on-throttle — possible fuel starvation or misfire.",
                 metric_value=float(drops),
                 distance_pct=pct,
                 time_in_lap_ms=in_lap,
@@ -362,6 +422,9 @@ def _detect_pit_in(
 
     Returns the (anomalies, pit_lap_nums) pair so the orchestrator can persist
     `is_pit_lap=1` on those rows.
+
+    Karting-aware: thresholds scale with the session's p90 speed so a kart
+    session (top speed ~60 kph) doesn't get every lap flagged.
     """
     speed_ch = _match_channel(channels, ["GPS Speed", "Speed"])
     if not speed_ch:
@@ -377,15 +440,21 @@ def _detect_pit_in(
     if dt_avg <= 0:
         return [], set()
 
+    # Karting-aware threshold: scale by session p90 speed.
+    # Cars: p90 ~200 kph → threshold 40 kph (20%).
+    # Karts: p90 ~60 kph → threshold 21 kph (35% of p90, min 15).
+    p90 = float(np.percentile(speed, 90)) if len(speed) >= 10 else 0.0
+    is_karting = p90 < 90.0
+    if is_karting:
+        threshold_kph = max(15.0, 0.35 * p90)
+        min_run_ms = 8_000.0
+    else:
+        threshold_kph = 40.0
+        min_run_ms = 5_000.0
+    edge_frac = 0.15
+
     pit_laps: set[int] = set()
     anomalies: list[Anomaly] = []
-    # In/out laps spend most of their time below 40 km/h *at the start or end*
-    # of the lap (rolling out of pit lane, or rolling back in). Real flying
-    # laps may dip below 40 km/h mid-lap through a hairpin/chicane but never
-    # at the lap boundary.
-    threshold_kph = 40.0
-    min_run_ms = 5_000.0     # at least 5s of sustained slow
-    edge_frac = 0.15         # the slow run must touch the first or last 15%
 
     for lap in laps:
         if lap["num"] <= 0 or lap["duration_ms"] <= 0:
@@ -397,6 +466,13 @@ def _detect_pit_in(
         n = len(lap_speed)
         if n < 10:
             continue
+
+        # A lap where the *median* speed is below threshold is a cruise/install
+        # lap, not a racing lap with a pit segment. Skip it without flagging.
+        lap_median = float(np.median(lap_speed))
+        if lap_median < threshold_kph:
+            continue
+
         below = lap_speed < threshold_kph
 
         # Find the longest contiguous run below threshold and where it lives
@@ -428,6 +504,28 @@ def _detect_pit_in(
         touches_end = end_frac >= (1.0 - edge_frac)
         if not (touches_start or touches_end):
             # Mid-lap slow section — that's a corner, not a pit.
+            continue
+
+        # Require a genuine dwell: a contiguous stretch at near-zero speed
+        # within the slow run. Real pit stops/pit-in crawls have this; slow
+        # corners do not.
+        slow_segment = lap_speed[best_start:best_start + best_run]
+        near_stop_threshold = max(5.0, 0.25 * threshold_kph)
+        near_stop = slow_segment < near_stop_threshold
+        # Longest contiguous run of near-stop samples
+        ns_best = 0
+        ns_run = 0
+        for b in near_stop:
+            if b:
+                ns_run += 1
+                if ns_run > ns_best:
+                    ns_best = ns_run
+            else:
+                ns_run = 0
+        ns_ms = ns_best * dt_avg
+        if ns_ms < 3_000.0:
+            # No 3-second near-stop dwell — probably a hairpin at the lap
+            # boundary, not a true in/out lap.
             continue
 
         pit_laps.add(int(lap["num"]))
