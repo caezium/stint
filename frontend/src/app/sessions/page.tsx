@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { AnomalyBadge } from "@/components/anomaly-badge";
-import { SessionTagBadges } from "@/components/session-tag-badges";
+import { SessionTagBadges, TAG_LABEL, TAG_STYLE } from "@/components/session-tag-badges";
 import { Select } from "@/components/ui/select";
 
 export default function SessionsPage() {
@@ -50,13 +50,15 @@ export default function SessionsPage() {
   const [saveMinLaps, setSaveMinLaps] = useState<string>("");
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [activeTags, setActiveTags] = useState<string[]>([]);
 
   function refreshCollections() {
     fetchSmartCollections().then(setCollections).catch(() => setCollections([]));
   }
 
   useEffect(() => {
-    fetchSessions()
+    fetchSessions({ includeTags: true })
       .then(setSessions)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -124,7 +126,22 @@ export default function SessionsPage() {
       (s.vehicle && s.vehicle.toLowerCase().includes(q));
     const matchesDriver = driverFilter === "" || s.driver_id === driverFilter;
     const matchesVehicle = vehicleFilter === "" || s.vehicle_id === vehicleFilter;
-    return matchesSearch && matchesDriver && matchesVehicle;
+    const matchesTags =
+      activeTags.length === 0 || (s.tags ?? []).some((t) => activeTags.includes(t));
+    return matchesSearch && matchesDriver && matchesVehicle && matchesTags;
+  });
+
+  // Surface the set of all known tags across the visible session pool so the
+  // user can toggle them as chips (independent of the active tag filter).
+  const allTags = Array.from(
+    new Set(baseList.flatMap((s) => s.tags ?? []))
+  ).sort();
+
+  // Always show the most recent session first. Secondary sort: log_time desc.
+  const sorted = [...filtered].sort((a, b) => {
+    const ad = (a.log_date ?? "") + " " + (a.log_time ?? "");
+    const bd = (b.log_date ?? "") + " " + (b.log_time ?? "");
+    return bd.localeCompare(ad);
   });
 
   return (
@@ -141,80 +158,8 @@ export default function SessionsPage() {
         </Link>
       </div>
 
-      <div className="mb-6 flex flex-wrap gap-2">
-        <Input
-          placeholder="Search by venue, driver, or file name..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="max-w-md"
-        />
-        <Select<number>
-          value={driverFilter === "" ? -1 : driverFilter}
-          onValueChange={(v) => setDriverFilter(v === -1 ? "" : v)}
-          options={[{ value: -1, label: "All drivers" }, ...drivers.map((d) => ({ value: d.id, label: d.name }))]}
-        />
-        <Select<number>
-          value={vehicleFilter === "" ? -1 : vehicleFilter}
-          onValueChange={(v) => setVehicleFilter(v === -1 ? "" : v)}
-          options={[{ value: -1, label: "All vehicles" }, ...vehicles.map((v) => ({ value: v.id, label: v.name }))]}
-        />
-      </div>
-
-      {loading && (
-        <div className="flex items-center justify-center py-20 text-muted-foreground">
-          <svg
-            className="animate-spin h-5 w-5 mr-3"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
-          Loading sessions...
-        </div>
-      )}
-
-      {error && (
-        <div className="text-center py-20">
-          <p className="text-destructive mb-2">Failed to load sessions</p>
-          <p className="text-muted-foreground text-sm">{error}</p>
-        </div>
-      )}
-
-      {!loading && !error && filtered.length === 0 && (
-        <div className="text-center py-20">
-          <div className="text-4xl mb-4">🏎️</div>
-          <h2 className="text-lg font-medium mb-2">
-            {search
-              ? "No sessions match your search"
-              : "No sessions yet"}
-          </h2>
-          <p className="text-muted-foreground text-sm mb-6">
-            {search
-              ? "Try a different search term."
-              : "Upload your first XRK file to get started."}
-          </p>
-          {!search && (
-            <Link href="/upload">
-              <Button>Upload XRK File</Button>
-            </Link>
-          )}
-        </div>
-      )}
-
-      {/* Smart collections sidebar */}
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+      {/* Smart collections — higher-level navigation, placed above filters */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Collections:</span>
         <Button
           size="sm"
@@ -250,58 +195,228 @@ export default function SessionsPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filtered.map((session) => (
-          <Link key={session.id} href={`/sessions/${session.id}`}>
-            <Card className="hover:border-primary/30 transition-colors cursor-pointer h-full">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between mb-3">
-                  <h3 className="font-semibold text-base leading-tight">
-                    {session.venue || "Unknown Venue"}
-                  </h3>
-                  <Badge variant="secondary" className="ml-2 shrink-0 text-xs">
-                    {session.lap_count} laps
-                  </Badge>
-                </div>
-                <div className="mb-2 space-y-1">
-                  <AnomalyBadge sessionId={session.id} />
-                  <SessionTagBadges sessionId={session.id} />
-                </div>
-                <div className="space-y-1.5 text-sm text-muted-foreground">
-                  <div className="flex justify-between">
-                    <span>Driver</span>
-                    <span className="text-foreground">
-                      {session.driver || "—"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Date</span>
-                    <span className="text-foreground">
-                      {session.log_date || "—"}
-                    </span>
-                  </div>
-                  {session.best_lap_time_ms != null && session.best_lap_time_ms > 0 && (
-                    <div className="flex justify-between">
-                      <span>Best Lap</span>
-                      <span className="text-green-400 font-mono">
-                        {formatLapTime(session.best_lap_time_ms)}
-                      </span>
-                    </div>
-                  )}
-                  {session.logger_model && (
-                    <div className="flex justify-between">
-                      <span>Logger</span>
-                      <span className="text-foreground">
-                        {session.logger_model}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
+      {/* Sticky filter toolbar */}
+      <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border/40 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3 mb-4 space-y-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <Input
+            placeholder="Search by venue, driver, or file name..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="max-w-md"
+          />
+          <Select<number>
+            value={driverFilter === "" ? -1 : driverFilter}
+            onValueChange={(v) => setDriverFilter(v === -1 ? "" : v)}
+            options={[{ value: -1, label: "All drivers" }, ...drivers.map((d) => ({ value: d.id, label: d.name }))]}
+          />
+          <Select<number>
+            value={vehicleFilter === "" ? -1 : vehicleFilter}
+            onValueChange={(v) => setVehicleFilter(v === -1 ? "" : v)}
+            options={[{ value: -1, label: "All vehicles" }, ...vehicles.map((v) => ({ value: v.id, label: v.name }))]}
+          />
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant={viewMode === "grid" ? "default" : "secondary"}
+              onClick={() => setViewMode("grid")}
+              aria-label="Grid view"
+            >
+              Grid
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === "list" ? "default" : "secondary"}
+              onClick={() => setViewMode("list")}
+              aria-label="List view"
+            >
+              List
+            </Button>
+          </div>
+        </div>
+
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-muted-foreground mr-1">Tags:</span>
+            {allTags.map((t) => {
+              const active = activeTags.includes(t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() =>
+                    setActiveTags((prev) =>
+                      prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
+                    )
+                  }
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                    active
+                      ? TAG_STYLE[t] ?? "bg-primary/20 border-primary/40"
+                      : "border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+                  }`}
+                >
+                  {TAG_LABEL[t] ?? t}
+                </button>
+              );
+            })}
+            {activeTags.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveTags([])}
+                className="text-muted-foreground hover:text-foreground underline underline-offset-2 ml-1"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {loading && (
+        <div className="flex items-center justify-center py-20 text-muted-foreground">
+          <svg
+            className="animate-spin h-5 w-5 mr-3"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+          Loading sessions...
+        </div>
+      )}
+
+      {error && (
+        <div className="text-center py-20">
+          <p className="text-destructive mb-2">Failed to load sessions</p>
+          <p className="text-muted-foreground text-sm">{error}</p>
+        </div>
+      )}
+
+      {!loading && !error && sorted.length === 0 && (
+        <div className="text-center py-20">
+          <div className="text-4xl mb-4">🏎️</div>
+          <h2 className="text-lg font-medium mb-2">
+            {search || driverFilter !== "" || vehicleFilter !== ""
+              ? "No sessions match your filters"
+              : "No sessions yet"}
+          </h2>
+          <p className="text-muted-foreground text-sm mb-6">
+            {search || driverFilter !== "" || vehicleFilter !== ""
+              ? "Try different search terms or clear the filters."
+              : "Upload your first XRK file to get started."}
+          </p>
+          {!search && driverFilter === "" && vehicleFilter === "" && (
+            <Link href="/upload">
+              <Button>Upload XRK File</Button>
+            </Link>
+          )}
+        </div>
+      )}
+
+      {viewMode === "grid" ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {sorted.map((session) => (
+            <Link key={session.id} href={`/sessions/${session.id}`}>
+              <Card className="hover:border-primary/30 transition-colors cursor-pointer h-full">
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <h3 className="font-semibold text-base leading-tight">
+                      {session.venue || "Unknown Venue"}
+                    </h3>
+                    <Badge variant="secondary" className="ml-2 shrink-0 text-xs">
+                      {session.lap_count} laps
+                    </Badge>
+                  </div>
+                  <div className="mb-2 space-y-1">
+                    <AnomalyBadge sessionId={session.id} />
+                    <SessionTagBadges sessionId={session.id} tags={session.tags} />
+                  </div>
+                  <div className="space-y-1.5 text-sm text-muted-foreground">
+                    <div className="flex justify-between">
+                      <span>Driver</span>
+                      <span className="text-foreground">
+                        {session.driver || "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Date</span>
+                      <span className="text-foreground">
+                        {session.log_date || "—"}
+                      </span>
+                    </div>
+                    {session.best_lap_time_ms != null && session.best_lap_time_ms > 0 && (
+                      <div className="flex justify-between">
+                        <span>Best Lap</span>
+                        <span className="text-green-400 font-mono">
+                          {formatLapTime(session.best_lap_time_ms)}
+                        </span>
+                      </div>
+                    )}
+                    {session.logger_model && (
+                      <div className="flex justify-between">
+                        <span>Logger</span>
+                        <span className="text-foreground">
+                          {session.logger_model}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <div className="grid grid-cols-[1fr_140px_100px_100px_110px] gap-3 px-4 py-2 border-b border-border/60 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <div>Venue / Driver</div>
+              <div>Date</div>
+              <div>Laps</div>
+              <div>Best lap</div>
+              <div>Tags</div>
+            </div>
+            {sorted.map((session) => (
+              <Link
+                key={session.id}
+                href={`/sessions/${session.id}`}
+                className="grid grid-cols-[1fr_140px_100px_100px_110px] gap-3 px-4 py-2.5 hover:bg-muted/30 border-b border-border/40 last:border-b-0 text-sm items-center"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium truncate">
+                    {session.venue || "Unknown Venue"}
+                  </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {session.driver || "—"}
+                    {session.vehicle && ` · ${session.vehicle}`}
+                  </div>
+                </div>
+                <div className="text-muted-foreground">{session.log_date || "—"}</div>
+                <div>{session.lap_count}</div>
+                <div className="font-mono text-green-400">
+                  {session.best_lap_time_ms != null && session.best_lap_time_ms > 0
+                    ? formatLapTime(session.best_lap_time_ms)
+                    : "—"}
+                </div>
+                <div>
+                  <SessionTagBadges sessionId={session.id} tags={session.tags} />
+                </div>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {saveOpen && (
         <div

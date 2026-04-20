@@ -24,6 +24,8 @@ export interface Session {
   driver_id?: number | null;
   vehicle_id?: number | null;
   track_id?: number | null;
+  /** Present only when list fetched with includeTags=true. */
+  tags?: string[];
 }
 
 export interface Lap {
@@ -32,6 +34,7 @@ export interface Lap {
   end_time_ms: number;
   duration_ms: number;
   split_times?: (number | null)[];
+  is_pit_lap?: number | boolean | null;
 }
 
 export interface Channel {
@@ -67,9 +70,156 @@ export interface UploadResult {
 
 // ---- API functions ----
 
-export async function fetchSessions(): Promise<Session[]> {
-  const res = await fetch("/api/sessions");
+export async function fetchSessions(opts?: { includeTags?: boolean }): Promise<Session[]> {
+  const url = opts?.includeTags ? "/api/sessions?include_tags=1" : "/api/sessions";
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
+  return res.json();
+}
+
+// ---- Lap annotations ----
+
+export interface LapAnnotation {
+  id: number;
+  session_id: string;
+  lap_num: number;
+  distance_pct: number | null;
+  time_in_lap_ms: number | null;
+  author: string;
+  body: string;
+  created_at: string;
+}
+
+export async function fetchAnnotations(sessionId: string): Promise<LapAnnotation[]> {
+  const res = await fetch(`/api/sessions/${sessionId}/annotations`);
+  if (!res.ok) throw new Error(`Failed to fetch annotations: ${res.status}`);
+  return res.json();
+}
+
+export async function createAnnotation(
+  sessionId: string,
+  body: {
+    lap_num: number;
+    distance_pct?: number | null;
+    time_in_lap_ms?: number | null;
+    author?: string;
+    body: string;
+  }
+): Promise<LapAnnotation> {
+  const res = await fetch(`/api/sessions/${sessionId}/annotations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Failed to create annotation: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteAnnotation(id: number): Promise<void> {
+  const res = await fetch(`/api/annotations/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete annotation: ${res.status}`);
+}
+
+// ---- Proposals ----
+
+export interface Proposal {
+  id: number;
+  session_id: string;
+  kind: "layout" | "math_channel";
+  payload: unknown;
+  status: "pending" | "applied" | "rejected";
+  source: string;
+  created_at: string;
+  applied_at: string | null;
+  rejected_at: string | null;
+}
+
+export async function fetchProposals(sessionId: string, status: string = "pending"): Promise<Proposal[]> {
+  const res = await fetch(`/api/sessions/${sessionId}/proposals?status=${status}`);
+  if (!res.ok) throw new Error(`Failed to fetch proposals: ${res.status}`);
+  return res.json();
+}
+
+export async function applyProposal(id: number): Promise<void> {
+  const res = await fetch(`/api/proposals/${id}/apply`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to apply: ${res.status}`);
+}
+
+export async function rejectProposal(id: number): Promise<void> {
+  const res = await fetch(`/api/proposals/${id}/reject`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to reject: ${res.status}`);
+}
+
+// ---- Jobs ----
+
+export interface JobRun {
+  id: number;
+  session_id: string | null;
+  kind: string;
+  status: "pending" | "running" | "ok" | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+  attempt: number;
+  created_at: string;
+}
+
+export async function fetchJobs(params: {
+  session_id?: string;
+  kind?: string;
+  status?: string;
+}): Promise<JobRun[]> {
+  const q = new URLSearchParams();
+  if (params.session_id) q.set("session_id", params.session_id);
+  if (params.kind) q.set("kind", params.kind);
+  if (params.status) q.set("status", params.status);
+  const res = await fetch(`/api/jobs?${q.toString()}`);
+  if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.status}`);
+  return res.json();
+}
+
+export async function enqueueJob(kind: string, sessionId?: string): Promise<{ id: number }> {
+  const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await fetch(`/api/jobs/${kind}${q}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to enqueue: ${res.status}`);
+  return res.json();
+}
+
+// ---- Share ----
+
+export interface ShareToken {
+  token: string;
+  scope: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  view_count: number;
+}
+
+export async function createShare(sessionId: string): Promise<{ token: string; url: string }> {
+  const res = await fetch(`/api/sessions/${sessionId}/share`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to create share: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchShares(sessionId: string): Promise<ShareToken[]> {
+  const res = await fetch(`/api/sessions/${sessionId}/shares`);
+  if (!res.ok) throw new Error(`Failed to fetch shares: ${res.status}`);
+  return res.json();
+}
+
+export async function revokeShare(token: string): Promise<void> {
+  const res = await fetch(`/api/shares/${token}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to revoke share: ${res.status}`);
+}
+
+export async function fetchSharedSession(token: string): Promise<{
+  session: Session;
+  laps: Lap[];
+  read_only: boolean;
+}> {
+  const res = await fetch(`/api/share/${token}`);
+  if (!res.ok) throw new Error(`Failed to fetch share: ${res.status}`);
   return res.json();
 }
 
@@ -657,6 +807,21 @@ export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void
   if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
 }
 
+export async function clearTrackSfLine(id: number): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/sf-line`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to clear S/F line: ${res.status}`);
+}
+
+export async function clearTrackPitLane(id: number): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/pit-lane`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to clear pit lane: ${res.status}`);
+}
+
+export async function clearTrackSplits(id: number): Promise<void> {
+  const res = await fetch(`/api/tracks/${id}/splits`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to clear splits: ${res.status}`);
+}
+
 export interface MultiSessionReportRow {
   session_id: string;
   file_name: string;
@@ -801,6 +966,9 @@ export interface Driver {
   name: string;
   weight_kg: number;
   created_at: string;
+  session_count?: number;
+  last_session_date?: string | null;
+  best_lap_time_ms?: number | null;
 }
 
 export interface Vehicle {
@@ -1129,9 +1297,10 @@ export interface ChatUsageStats {
 }
 
 export async function backfillAllSessions(): Promise<{
+  queued: number;
   session_count: number;
-  counts: Record<string, number>;
-  error_count: number;
+  kind: string;
+  note: string;
 }> {
   const res = await fetch("/api/admin/backfill", { method: "POST" });
   if (!res.ok) throw new Error(`Backfill failed: ${res.status}`);

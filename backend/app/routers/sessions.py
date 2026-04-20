@@ -17,6 +17,7 @@ async def list_sessions(
     vehicle_id: Optional[int] = None,
     search: Optional[str] = None,
     sort: str = Query(default="date_desc"),
+    include_tags: bool = Query(default=False),
 ):
     db = await get_db()
     try:
@@ -48,6 +49,13 @@ async def list_sessions(
 
         rows = await db.execute(query, params)
         sessions = [dict(row) async for row in rows]
+
+        if include_tags and sessions:
+            from ..tags import get_tags_for_sessions
+            tags_map = await get_tags_for_sessions([s["id"] for s in sessions])
+            for s in sessions:
+                s["tags"] = tags_map.get(s["id"], [])
+
         return sessions
     finally:
         await db.close()
