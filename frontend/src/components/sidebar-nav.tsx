@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Menu,
   MessageSquare,
   Map,
   Settings,
   Upload,
   Users,
   FileText,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { StintLogo } from "@/components/stint-logo";
@@ -33,15 +36,46 @@ const NAV: NavItem[] = [
 ];
 
 /**
- * Left sidebar nav, 64px collapsed / 200px expanded on hover. Replaces the
- * former horizontal topbar. Fixed position, full height.
+ * Left sidebar nav, 64px collapsed / 200px expanded on hover. On mobile
+ * (<768px) it collapses to a hamburger button that opens a full drawer.
+ * Hidden entirely on /share/* — coach share pages are meant to read as
+ * standalone.
  */
 export function SidebarNav() {
   const pathname = usePathname() || "";
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close the mobile drawer on route change.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  if (pathname.startsWith("/share/")) {
+    return null;
+  }
 
   return (
+    <>
+      <button
+        type="button"
+        onClick={() => setMobileOpen((v) => !v)}
+        aria-label="Toggle navigation"
+        className="md:hidden fixed top-3 left-3 z-50 rounded-md border border-border bg-background/90 backdrop-blur p-2 shadow"
+      >
+        {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+      </button>
+
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
     <aside
-      className="fixed left-0 top-0 bottom-0 z-40 w-[64px] hover:w-[200px] transition-[width] duration-200 ease-out border-r border-border/50 bg-card/30 backdrop-blur-sm group/nav flex flex-col"
+      className={`fixed left-0 top-0 bottom-0 z-40 border-r border-border/50 bg-card/30 backdrop-blur-sm group/nav flex flex-col transition-[transform,width] duration-200 ease-out
+        ${mobileOpen ? "translate-x-0 w-[240px]" : "-translate-x-full"}
+        md:translate-x-0 md:w-[64px] md:hover:w-[200px]`}
     >
       {/* Brand */}
       <Link
@@ -92,5 +126,6 @@ export function SidebarNav() {
         Stint · Telemetry coach
       </div>
     </aside>
+    </>
   );
 }

@@ -267,6 +267,16 @@ TOOL_SCHEMAS: list[dict] = [
             "required": ["name", "expression"],
         },
     ),
+    _fn(
+        "get_session_annotations",
+        (
+            "Fetch driver-authored notes attached to specific laps in this "
+            "session. Useful when the user asks about what happened at a given "
+            "lap or corner — the driver may have left context like \"lost the "
+            "front here\"."
+        ),
+        {"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 
@@ -735,65 +745,78 @@ async def tool_list_layouts(session_id: str) -> dict:
 
 
 async def tool_apply_layout(session_id: str, name: str, charts: list) -> dict:
-    """Two-step UX: store the proposal but don't activate it. The frontend
-    surfaces a 'preview & apply' card the user must click."""
+    """Two-step UX: write a row to the proposals table with kind='layout'.
+
+    The proposals UI on session detail lets the user click Apply (materializes
+    a real layouts row) or Reject (marks the proposal dismissed).
+    """
     import json as _json
     if not name or not isinstance(charts, list):
         return {"error": "name and charts (list) are required"}
     db = await get_db()
     try:
         cur = await db.execute(
-            "INSERT INTO layouts (name, config_json, created_at) VALUES (?, ?, datetime('now'))",
-            (f"[proposed] {name[:60]}", _json.dumps({"charts": charts, "proposed": True})),
+            """INSERT INTO proposals (session_id, kind, payload_json, source)
+               VALUES (?, 'layout', ?, 'chat')""",
+            (session_id, _json.dumps({"name": name[:60], "charts": charts})),
         )
         new_id = cur.lastrowid
         await db.commit()
     finally:
         await db.close()
     return {
-        "layout_id": new_id,
+        "proposal_id": new_id,
+        "kind": "layout",
         "name": name,
-        "status": "proposed",
-        "note": "Layout stored as a proposal. The user must click Apply.",
+        "status": "pending",
+        "note": "Proposal stored. User must Apply from the session page to activate.",
     }
+
+
+async def tool_get_session_annotations(session_id: str) -> dict:
+    """Return all driver-authored lap annotations for this session, sorted by lap."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            """SELECT id, lap_num, distance_pct, time_in_lap_ms, author, body,
+                      created_at
+               FROM lap_annotations
+               WHERE session_id = ?
+               ORDER BY lap_num, COALESCE(distance_pct, 0), id""",
+            (session_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    return {"count": len(rows), "annotations": rows}
 
 
 async def tool_apply_math_channel(
     session_id: str, name: str, expression: str
 ) -> dict:
-    """Two-step: persist as a draft math channel for the user to confirm."""
+    """Two-step: write a proposal with kind='math_channel'."""
+    import json as _json
     if not name or not expression:
         return {"error": "name and expression are required"}
     db = await get_db()
     try:
-        # Store under user_settings as a JSON queue keyed by session_id so the
-        # workspace can render the proposal banner.
-        import json as _json
-        key = f"math_proposal:{session_id}"
+        payload = {"name": name[:60], "formula": expression, "units": ""}
         cur = await db.execute(
-            "SELECT value FROM user_settings WHERE key = ?", (key,)
+            """INSERT INTO proposals (session_id, kind, payload_json, source)
+               VALUES (?, 'math_channel', ?, 'chat')""",
+            (session_id, _json.dumps(payload)),
         )
-        row = await cur.fetchone()
-        existing: list[dict] = []
-        if row and row["value"]:
-            try:
-                existing = _json.loads(row["value"]) or []
-            except Exception:
-                existing = []
-        existing.append({"name": name, "expression": expression, "status": "proposed"})
-        await db.execute(
-            "INSERT INTO user_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, _json.dumps(existing)),
-        )
+        new_id = cur.lastrowid
         await db.commit()
     finally:
         await db.close()
     return {
+        "proposal_id": new_id,
+        "kind": "math_channel",
         "name": name,
         "expression": expression,
-        "status": "proposed",
-        "note": "Math channel stored as a proposal. The user must click Apply in the workspace.",
+        "status": "pending",
+        "note": "Proposal stored. User must Apply from the session page to activate.",
     }
 
 
@@ -882,6 +905,8 @@ def summarize_tool_result(name: str, input: dict, result: Any) -> str:
             return f"proposed layout '{result.get('name', '')}'"
         if name == "apply_math_channel":
             return f"proposed math channel '{result.get('name', '')}'"
+        if name == "get_session_annotations":
+            return f"{result.get('count', 0)} driver notes"
     except Exception:
         return ""
     return ""
@@ -967,6 +992,8 @@ async def execute_tool(name: str, input: dict, session_id: str) -> dict:
             return await tool_apply_math_channel(
                 session_id, str(input["name"]), str(input["expression"])
             )
+        if name == "get_session_annotations":
+            return await tool_get_session_annotations(session_id)
         return {"error": f"Unknown tool: {name}"}
     except KeyError as e:
         return {"error": f"Missing required input field: {e}"}

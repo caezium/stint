@@ -22,8 +22,8 @@ export default function RootLayout({
     <html lang="en" className={`dark ${inter.variable} h-full antialiased`}>
       <body className="min-h-full bg-background text-foreground font-sans">
         <SidebarNav />
-        {/* Content area offset by collapsed sidebar width */}
-        <main className="pl-[64px] min-h-screen">{children}</main>
+        {/* Content area offset by collapsed sidebar width on desktop; full-width on mobile */}
+        <main className="md:pl-[64px] min-h-screen">{children}</main>
       </body>
     </html>
   );
