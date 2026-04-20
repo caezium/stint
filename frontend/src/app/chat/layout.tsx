@@ -3,14 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, MessageSquare, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Menu, MessageSquare, Plus, X } from "lucide-react";
 import {
   createChatConversation,
   deleteChatConversation,
   listAllChatConversations,
   type ChatConversation,
 } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 /**
  * Layout for the dedicated /chat experience: left rail with conversations
@@ -29,6 +29,12 @@ export default function ChatLayout({
   const [convs, setConvs] = useState<ChatConversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname]);
 
   async function reload() {
     setLoading(true);
@@ -44,8 +50,18 @@ export default function ChatLayout({
     reload();
   }, [pathname]);
 
-  // Group by session_id, preserving newest-first order
+  // Group by session_id, preserving newest-first order; apply optional
+  // title / venue / driver search filter.
   const grouped = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = q
+      ? convs.filter(
+          (c) =>
+            (c.title ?? "").toLowerCase().includes(q) ||
+            (c.session_venue ?? "").toLowerCase().includes(q) ||
+            (c.session_driver ?? "").toLowerCase().includes(q)
+        )
+      : convs;
     const acc = new Map<
       string,
       {
@@ -56,7 +72,7 @@ export default function ChatLayout({
         items: ChatConversation[];
       }
     >();
-    for (const c of convs) {
+    for (const c of filtered) {
       const key = c.session_id;
       if (!acc.has(key)) {
         acc.set(key, {
@@ -70,7 +86,7 @@ export default function ChatLayout({
       acc.get(key)!.items.push(c);
     }
     return Array.from(acc.values());
-  }, [convs]);
+  }, [convs, search]);
 
   function toggle(sessionId: string) {
     setCollapsed((prev) => {
@@ -89,8 +105,29 @@ export default function ChatLayout({
 
   return (
     <div className="h-[calc(100vh)] flex">
+      {/* Mobile drawer trigger */}
+      <button
+        type="button"
+        onClick={() => setDrawerOpen((v) => !v)}
+        aria-label="Toggle chat history"
+        className="md:hidden fixed top-3 right-3 z-50 rounded-md border border-border bg-background/90 backdrop-blur p-2 shadow"
+      >
+        {drawerOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+      </button>
+
+      {drawerOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
+
       {/* Conversation list rail */}
-      <aside className="w-[280px] shrink-0 border-r border-border/40 bg-card/30 flex flex-col">
+      <aside
+        className={`shrink-0 border-r border-border/40 bg-card/30 flex flex-col transition-transform duration-200
+          ${drawerOpen ? "translate-x-0" : "-translate-x-full"}
+          md:translate-x-0 fixed md:static left-0 top-0 bottom-0 z-40 w-[280px] bg-background md:bg-card/30`}
+      >
         <div className="h-14 flex items-center justify-between px-4 border-b border-border/40">
           <div>
             <div className="text-sm font-semibold">Chat history</div>
@@ -98,6 +135,15 @@ export default function ChatLayout({
               Grouped by session
             </div>
           </div>
+        </div>
+
+        <div className="px-3 py-2 border-b border-border/40">
+          <Input
+            placeholder="Search conversations…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8 text-xs"
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto py-2 px-2 space-y-2">

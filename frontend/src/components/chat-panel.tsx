@@ -2,8 +2,16 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, PanelRightOpen, PanelBottomOpen, X } from "lucide-react";
+import {
+  History,
+  ExternalLink,
+  Plus,
+  PanelRightOpen,
+  PanelBottomOpen,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MessageBubble } from "@/components/chat/message";
 import { MultimodalInput } from "@/components/chat/multimodal-input";
@@ -12,6 +20,7 @@ import {
   deleteChatConversation,
   fetchChatConversation,
   fetchChatSuggestions,
+  listAllChatConversations,
   listChatConversations,
   type ChatConversation,
   type ChatUIMessage,
@@ -278,19 +287,16 @@ export function ChatPanel({ sessionId }: Props) {
   if (!open) return null;
 
   const isRight = dockEdge === "right";
-  // Topbar is h-14 (56 px) sticky at top — chat panel starts below it so the
-  // header controls stay visible.
-  const TOPBAR = 56;
+  // The session and workspace pages don't have a global topbar — the chat
+  // panel used to reserve 56px for a topbar that doesn't exist, which
+  // produced a visible gap at the top of the sidebar. Flush to the viewport
+  // edges instead.
   const outerClass = isRight
-    ? "fixed right-0 z-40 border-l border-border bg-background shadow-2xl flex flex-col"
+    ? "fixed right-0 top-0 bottom-0 z-40 border-l border-border bg-background shadow-2xl flex flex-col"
     : "fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background shadow-2xl flex flex-col";
   const outerStyle: React.CSSProperties = isRight
-    ? {
-        width: `min(100vw, ${rightW}px)`,
-        top: TOPBAR,
-        bottom: 0,
-      }
-    : { height: `min(calc(100vh - ${TOPBAR}px), ${bottomH}px)` };
+    ? { width: `min(100vw, ${rightW}px)` }
+    : { height: `min(100vh, ${bottomH}px)` };
 
   return (
     <div className={outerClass} style={outerStyle}>
@@ -317,10 +323,25 @@ export function ChatPanel({ sessionId }: Props) {
         <div>
           <h2 className="font-semibold text-sm">Ask Stint</h2>
           <p className="text-[11px] text-muted-foreground">
-            Claude-powered telemetry coach for this session
+            Coach for this session · cross-session history via the clock icon
           </p>
         </div>
         <div className="flex items-center gap-1">
+          <HistoryMenu
+            currentSessionId={sessionId}
+            activeConversationId={activeConversationId}
+            onPickLocal={(id) => setActiveConversationId(id)}
+          />
+          {activeConversationId && (
+            <Link
+              href={`/chat/${activeConversationId}`}
+              className="text-muted-foreground hover:text-foreground p-1.5"
+              title="Open in full chat page"
+              aria-label="Open in /chat"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </Link>
+          )}
           <button
             onClick={() => setDockEdge(isRight ? "bottom" : "right")}
             className="text-muted-foreground hover:text-foreground p-1.5"
@@ -425,5 +446,99 @@ function SuggestionChip({
     >
       {text}
     </button>
+  );
+}
+
+/**
+ * Lightweight dropdown that lists the current session's conversations first
+ * (clicking loads them inline) and the most recent cross-session conversations
+ * below (clicking deep-links to /chat/[id]).
+ */
+function HistoryMenu({
+  currentSessionId,
+  activeConversationId,
+  onPickLocal,
+}: {
+  currentSessionId: string;
+  activeConversationId: number | null;
+  onPickLocal: (id: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [local, setLocal] = useState<ChatConversation[]>([]);
+  const [all, setAll] = useState<ChatConversation[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    listChatConversations(currentSessionId).then(setLocal).catch(() => setLocal([]));
+    listAllChatConversations().then(setAll).catch(() => setAll([]));
+  }, [open, currentSessionId]);
+
+  const otherSessions = all.filter((c) => c.session_id !== currentSessionId).slice(0, 20);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-muted-foreground hover:text-foreground p-1.5"
+        title="Conversation history"
+        aria-label="History"
+      >
+        <History className="h-4 w-4" />
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 top-full mt-1 z-50 w-80 max-h-[400px] overflow-y-auto rounded-md border border-border bg-popover shadow-2xl text-xs">
+            <div className="px-3 py-2 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border/60">
+              This session
+            </div>
+            {local.length === 0 ? (
+              <div className="px-3 py-2 text-muted-foreground">
+                No conversations yet.
+              </div>
+            ) : (
+              local.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    onPickLocal(c.id);
+                    setOpen(false);
+                  }}
+                  className={`block w-full text-left px-3 py-1.5 hover:bg-muted/60 ${
+                    activeConversationId === c.id ? "bg-muted/60" : ""
+                  }`}
+                >
+                  <div className="truncate">{c.title || `Chat ${c.id}`}</div>
+                </button>
+              ))
+            )}
+
+            <div className="px-3 py-2 text-[10px] uppercase tracking-wide text-muted-foreground border-t border-b border-border/60 mt-1">
+              Recent · other sessions
+            </div>
+            {otherSessions.length === 0 ? (
+              <div className="px-3 py-2 text-muted-foreground">None.</div>
+            ) : (
+              otherSessions.map((c) => (
+                <Link
+                  key={c.id}
+                  href={`/chat/${c.id}`}
+                  className="block w-full text-left px-3 py-1.5 hover:bg-muted/60"
+                  onClick={() => setOpen(false)}
+                >
+                  <div className="truncate">{c.title || `Chat ${c.id}`}</div>
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    {c.session_id}
+                  </div>
+                </Link>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
