@@ -9,6 +9,9 @@ import {
   setTrackSfLine,
   setTrackSplits,
   setTrackPitLane,
+  clearTrackSfLine,
+  clearTrackPitLane,
+  clearTrackSplits,
   updateTrack,
   type Track,
   type SfLine,
@@ -358,19 +361,29 @@ export default function TrackEditPage() {
                       ? "Click once on the track — a perpendicular S/F line is placed for you."
                       : "Click two points on the track to place the S/F line."}
                   </p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <Button size="sm" onClick={saveSf} disabled={!sfLine || busy}>
                       Save S/F
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => {
-                        setSfClickBuf([]);
-                        setSfLine(null);
+                      disabled={busy || (!sfLine && sfClickBuf.length === 0)}
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          await clearTrackSfLine(id);
+                          setSfClickBuf([]);
+                          setSfLine(null);
+                          setMsg("S/F line cleared");
+                        } catch (e) {
+                          setMsg(e instanceof Error ? e.message : "Failed");
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     >
-                      Clear
+                      Delete S/F
                     </Button>
                   </div>
                 </div>
@@ -381,19 +394,29 @@ export default function TrackEditPage() {
                       ? "Click once per split — each is auto-perpendicular to the track. Up to 8."
                       : "Click two points per split. Up to 8 splits."}
                   </p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <Button size="sm" onClick={saveSplits} disabled={busy}>
                       Save splits
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => {
-                        setSplits([]);
-                        setPendingSplit([]);
+                      disabled={busy || splits.length === 0}
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          await clearTrackSplits(id);
+                          setSplits([]);
+                          setPendingSplit([]);
+                          setMsg("All splits cleared");
+                        } catch (e) {
+                          setMsg(e instanceof Error ? e.message : "Failed");
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     >
-                      Clear all
+                      Delete all
                     </Button>
                     <Button
                       size="sm"
@@ -420,12 +443,22 @@ export default function TrackEditPage() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => {
-                        setPitLane([]);
-                        setPitClosed(false);
+                      disabled={busy || pitLane.length === 0}
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          await clearTrackPitLane(id);
+                          setPitLane([]);
+                          setPitClosed(false);
+                          setMsg("Pit lane cleared");
+                        } catch (e) {
+                          setMsg(e instanceof Error ? e.message : "Failed");
+                        } finally {
+                          setBusy(false);
+                        }
                       }}
                     >
-                      Clear
+                      Delete pit lane
                     </Button>
                     <Button
                       size="sm"

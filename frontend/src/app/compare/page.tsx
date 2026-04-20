@@ -1,117 +1,414 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
+  fetchSessions,
   fetchSession,
-  fetchTrack,
   fetchCrossSessionDeltaT,
+  type Session,
   type SessionDetail,
   type DeltaTData,
-  type TrackData,
 } from "@/lib/api";
-import { TrackMap } from "@/components/track-map";
+import { formatLapTime } from "@/lib/constants";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from "recharts";
 
-export default function ComparePage() {
+type Pick = { sessionId: string; lap: number } | null;
+
+function serializePick(p: Pick): string | null {
+  return p ? `${p.sessionId}:${p.lap}` : null;
+}
+function parsePick(s: string | null | undefined): Pick {
+  if (!s) return null;
+  const [sid, lapStr] = s.split(":");
+  const lap = Number(lapStr);
+  if (!sid || !Number.isFinite(lap)) return null;
+  return { sessionId: sid, lap };
+}
+
+function ComparePageInner() {
   const params = useSearchParams();
-  const a = params.get("a");
-  const b = params.get("b");
+  const router = useRouter();
 
-  const [sessionA, setSessionA] = useState<SessionDetail | null>(null);
-  const [sessionB, setSessionB] = useState<SessionDetail | null>(null);
-  const [lapA, setLapA] = useState<number | null>(null);
-  const [lapB, setLapB] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [a, setA] = useState<Pick>(parsePick(params.get("a")));
+  const [b, setB] = useState<Pick>(parsePick(params.get("b")));
+
+  const [detailA, setDetailA] = useState<SessionDetail | null>(null);
+  const [detailB, setDetailB] = useState<SessionDetail | null>(null);
+
   const [delta, setDelta] = useState<DeltaTData | null>(null);
-  const [trackA, setTrackA] = useState<TrackData | null>(null);
-  const [trackB, setTrackB] = useState<TrackData | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (a) fetchSession(a).then(setSessionA).catch(() => setSessionA(null));
-    if (b) fetchSession(b).then(setSessionB).catch(() => setSessionB(null));
-  }, [a, b]);
+    fetchSessions().then(setSessions).catch(() => setSessions([]));
+  }, []);
 
   useEffect(() => {
-    if (a && lapA != null) fetchTrack(a, lapA).then(setTrackA).catch(() => setTrackA(null));
-    if (b && lapB != null) fetchTrack(b, lapB).then(setTrackB).catch(() => setTrackB(null));
-    if (!a || !b || lapA == null || lapB == null) return;
-    setError(null);
-    fetchCrossSessionDeltaT({ session_id: a, lap: lapA }, { session_id: b, lap: lapB })
-      .then(setDelta)
-      .catch((e) => {
-        setDelta(null);
-        setError(e.message ?? "Failed to compute delta");
-      });
-  }, [a, b, lapA, lapB]);
+    const q = new URLSearchParams();
+    const av = serializePick(a);
+    const bv = serializePick(b);
+    if (av) q.set("a", av);
+    if (bv) q.set("b", bv);
+    const s = q.toString();
+    router.replace(s ? `/compare?${s}` : "/compare", { scroll: false });
+  }, [a, b, router]);
 
-  if (!a || !b) {
-    return (
-      <div className="p-6 text-sm text-muted-foreground">
-        Pass two session ids as <code>?a=SESSION_A&amp;b=SESSION_B</code>.
-      </div>
-    );
-  }
+  useEffect(() => {
+    setDetailA(null);
+    if (!a) return;
+    fetchSession(a.sessionId).then(setDetailA).catch(() => setDetailA(null));
+  }, [a?.sessionId]);
+
+  useEffect(() => {
+    setDetailB(null);
+    if (!b) return;
+    fetchSession(b.sessionId).then(setDetailB).catch(() => setDetailB(null));
+  }, [b?.sessionId]);
+
+  useEffect(() => {
+    setDelta(null);
+    setError(null);
+    if (!a || !b || a.lap <= 0 || b.lap <= 0) return;
+    setLoading(true);
+    fetchCrossSessionDeltaT(
+      { session_id: a.sessionId, lap: a.lap },
+      { session_id: b.sessionId, lap: b.lap }
+    )
+      .then(setDelta)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to compute delta")
+      )
+      .finally(() => setLoading(false));
+  }, [a?.sessionId, a?.lap, b?.sessionId, b?.lap]);
+
+  const sessionOptions = useMemo(
+    () =>
+      sessions.map((s) => ({
+        value: s.id,
+        label: `${s.venue || "?"} · ${s.driver || "?"} · ${s.log_date || "?"}`,
+      })),
+    [sessions]
+  );
+  const lapOptionsA = useMemo(
+    () =>
+      (detailA?.laps ?? [])
+        .filter((l) => l.num > 0 && l.duration_ms > 0)
+        .map((l) => ({
+          value: l.num,
+          label: `L${l.num} · ${formatLapTime(l.duration_ms)}`,
+        })),
+    [detailA]
+  );
+  const lapOptionsB = useMemo(
+    () =>
+      (detailB?.laps ?? [])
+        .filter((l) => l.num > 0 && l.duration_ms > 0)
+        .map((l) => ({
+          value: l.num,
+          label: `L${l.num} · ${formatLapTime(l.duration_ms)}`,
+        })),
+    [detailB]
+  );
+
+  const lapA = a && detailA ? detailA.laps.find((l) => l.num === a.lap) : null;
+  const lapB = b && detailB ? detailB.laps.find((l) => l.num === b.lap) : null;
+
+  const chartData = useMemo(() => {
+    if (!delta) return [];
+    return delta.distance_m.map((d, i) => ({
+      distance: d,
+      delta: delta.delta_seconds[i],
+    }));
+  }, [delta]);
+
+  const finalDelta =
+    delta && delta.delta_seconds.length > 0
+      ? delta.delta_seconds[delta.delta_seconds.length - 1]
+      : null;
 
   return (
-    <div className="p-6 space-y-4 text-sm">
-      <h1 className="text-lg font-semibold">Session compare</h1>
-      <div className="grid grid-cols-2 gap-4">
-        <SidePane label="Reference" session={sessionA} selectedLap={lapA} onSelectLap={setLapA} track={trackA} />
-        <SidePane label="Compare" session={sessionB} selectedLap={lapB} onSelectLap={setLapB} track={trackB} />
-      </div>
-      <div>
-        <h2 className="font-semibold mb-1">Delta-t</h2>
-        {error && <p className="text-red-400">{error}</p>}
-        {delta && (
-          <p className="text-muted-foreground">
-            {delta.distance_m.length} samples; final Δt ={" "}
-            {delta.delta_seconds[delta.delta_seconds.length - 1]?.toFixed(3)} s
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Compare laps</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Side-by-side view of any two laps across sessions.
           </p>
-        )}
-        {!delta && !error && <p className="text-muted-foreground">Pick a lap in each session.</p>}
+        </div>
+        <Link href="/sessions">
+          <Button variant="secondary" size="sm">
+            Back to sessions
+          </Button>
+        </Link>
       </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <LapPicker
+          label="Lap A (reference)"
+          pick={a}
+          setPick={setA}
+          sessionOptions={sessionOptions}
+          lapOptions={lapOptionsA}
+          detail={detailA}
+          lap={lapA ?? null}
+        />
+        <LapPicker
+          label="Lap B (compare)"
+          pick={b}
+          setPick={setB}
+          sessionOptions={sessionOptions}
+          lapOptions={lapOptionsB}
+          detail={detailB}
+          lap={lapB ?? null}
+        />
+      </div>
+
+      {(!a || !b || a.lap <= 0 || b.lap <= 0) && (
+        <Card>
+          <CardContent className="p-8 text-sm text-muted-foreground text-center">
+            Pick a session and lap on each side to see the delta trace.
+          </CardContent>
+        </Card>
+      )}
+
+      {a && b && a.lap > 0 && b.lap > 0 && (
+        <Card>
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-base">Delta-T (B − A)</h2>
+              {finalDelta != null && (
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Final:</span>{" "}
+                  <span
+                    className={`font-mono ${finalDelta < 0 ? "text-green-400" : "text-red-400"}`}
+                  >
+                    {finalDelta > 0 ? "+" : ""}
+                    {finalDelta.toFixed(3)}s
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {loading && (
+              <div className="text-sm text-muted-foreground py-8 text-center">
+                Computing delta…
+              </div>
+            )}
+            {error && (
+              <div className="text-sm text-destructive py-4 text-center">{error}</div>
+            )}
+            {delta && chartData.length > 0 && (
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData}>
+                    <XAxis
+                      dataKey="distance"
+                      tick={{ fill: "#888", fontSize: 11 }}
+                      tickFormatter={(v) => `${(v / 1000).toFixed(1)}km`}
+                    />
+                    <YAxis
+                      tick={{ fill: "#888", fontSize: 11 }}
+                      tickFormatter={(v: number) =>
+                        v > 0 ? `+${v.toFixed(2)}s` : `${v.toFixed(2)}s`
+                      }
+                    />
+                    <Tooltip
+                      formatter={(value) => {
+                        const v = Number(value ?? 0);
+                        return [
+                          `${v > 0 ? "+" : ""}${v.toFixed(3)}s`,
+                          "Delta",
+                        ];
+                      }}
+                      labelFormatter={(label) => {
+                        const v = Number(label ?? 0);
+                        return `${(v / 1000).toFixed(2)} km`;
+                      }}
+                      contentStyle={{
+                        backgroundColor: "#1a1a1a",
+                        border: "1px solid #333",
+                        borderRadius: 4,
+                      }}
+                    />
+                    <ReferenceLine y={0} stroke="#444" strokeDasharray="3 3" />
+                    <Line
+                      type="monotone"
+                      dataKey="delta"
+                      stroke="#eab308"
+                      strokeWidth={1.5}
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {lapA && lapB && (
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="font-semibold text-base mb-3">Lap summary</h2>
+            <div className="grid grid-cols-3 gap-y-1.5 text-sm">
+              <div />
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                A
+              </div>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                B
+              </div>
+              <div className="text-muted-foreground">Duration</div>
+              <div className="font-mono">{formatLapTime(lapA.duration_ms)}</div>
+              <div className="font-mono">{formatLapTime(lapB.duration_ms)}</div>
+              <div className="text-muted-foreground">Delta (B − A)</div>
+              <div
+                className={`col-span-2 font-mono ${
+                  lapB.duration_ms < lapA.duration_ms
+                    ? "text-green-400"
+                    : "text-red-400"
+                }`}
+              >
+                {lapB.duration_ms > lapA.duration_ms ? "+" : ""}
+                {((lapB.duration_ms - lapA.duration_ms) / 1000).toFixed(3)}s
+              </div>
+              {lapA.split_times && lapA.split_times.length > 0 && lapB.split_times && (
+                <>
+                  <div className="col-span-3 mt-3 mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Split times
+                  </div>
+                  {lapA.split_times.map((tA, idx) => {
+                    const tB = lapB.split_times?.[idx] ?? null;
+                    return (
+                      <SectorRow
+                        key={idx}
+                        label={`S${idx + 1}`}
+                        a={tA ?? null}
+                        b={tB}
+                      />
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
 
-function SidePane({
+function SectorRow({
   label,
-  session,
-  selectedLap,
-  onSelectLap,
-  track,
+  a,
+  b,
 }: {
   label: string;
-  session: SessionDetail | null;
-  selectedLap: number | null;
-  onSelectLap: (n: number) => void;
-  track: TrackData | null;
+  a: number | null;
+  b: number | null;
 }) {
-  if (!session) return <div className="rounded border border-border p-3">Loading…</div>;
-  const laps = session.laps.filter((l) => l.num > 0 && l.duration_ms > 0);
+  const delta =
+    a != null && b != null ? b - a : null;
   return (
-    <div className="rounded border border-border p-3 space-y-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium truncate">{session.file_name ?? session.id}</div>
-      <div className="flex flex-wrap gap-1">
-        {laps.map((l) => (
-          <button
-            type="button"
-            key={l.num}
-            onClick={() => onSelectLap(l.num)}
-            className={`px-1.5 py-0.5 rounded text-xs ${
-              selectedLap === l.num
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted hover:bg-muted/80"
-            }`}
+    <>
+      <div className="text-muted-foreground">{label}</div>
+      <div className="font-mono">{a != null ? `${(a / 1000).toFixed(3)}s` : "—"}</div>
+      <div className="font-mono">
+        {b != null ? `${(b / 1000).toFixed(3)}s` : "—"}
+        {delta != null && (
+          <span
+            className={`ml-2 text-xs ${delta < 0 ? "text-green-400" : "text-red-400"}`}
           >
-            L{l.num} · {(l.duration_ms / 1000).toFixed(3)}s
-          </button>
-        ))}
+            ({delta > 0 ? "+" : ""}
+            {(delta / 1000).toFixed(3)})
+          </span>
+        )}
       </div>
-      {track && track.lat.length > 0 && (
-        <TrackMap lat={track.lat} lon={track.lon} speed={track.speed} width={340} height={260} />
-      )}
-    </div>
+    </>
+  );
+}
+
+interface LapPickerProps {
+  label: string;
+  pick: Pick;
+  setPick: (p: Pick) => void;
+  sessionOptions: { value: string; label: string }[];
+  lapOptions: { value: number; label: string }[];
+  detail: SessionDetail | null;
+  lap: { duration_ms: number } | null;
+}
+
+function LapPicker({
+  label,
+  pick,
+  setPick,
+  sessionOptions,
+  lapOptions,
+  detail,
+  lap,
+}: LapPickerProps) {
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-3">
+        <div className="text-xs text-muted-foreground uppercase tracking-wide">
+          {label}
+        </div>
+        <Select<string>
+          value={pick?.sessionId ?? ""}
+          onValueChange={(v) =>
+            setPick(v ? { sessionId: v, lap: pick?.lap ?? 0 } : null)
+          }
+          options={[{ value: "", label: "Pick a session…" }, ...sessionOptions]}
+          triggerClassName="w-full"
+        />
+        {detail && (
+          <Select<number>
+            value={pick?.lap ?? -1}
+            onValueChange={(v) => {
+              if (!pick) return;
+              setPick({ ...pick, lap: v });
+            }}
+            options={[{ value: -1, label: "Pick a lap…" }, ...lapOptions]}
+            triggerClassName="w-full"
+          />
+        )}
+        {detail && (
+          <div className="text-xs text-muted-foreground">
+            {detail.venue || "Unknown"} · {detail.driver || "—"} ·{" "}
+            {detail.log_date || "—"}
+          </div>
+        )}
+        {lap && (
+          <div className="text-sm">
+            <span className="text-muted-foreground">Lap time: </span>
+            <span className="font-mono">{formatLapTime(lap.duration_ms)}</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function ComparePage() {
+  return (
+    <Suspense
+      fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}
+    >
+      <ComparePageInner />
+    </Suspense>
   );
 }
