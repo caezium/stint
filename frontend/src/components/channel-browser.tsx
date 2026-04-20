@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { useSessionStore } from "@/stores/session-store";
 import { CHANNEL_CATEGORIES, DEFAULT_MATH_CHANNELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,8 @@ import type { Channel } from "@/lib/api";
 interface ChannelBrowserProps {
   activeChannels: string[];
   onToggleChannel: (name: string) => void;
+  /** Persist per-session hidden channels under this key. */
+  sessionId?: string;
 }
 
 const DEFAULT_MATH_VIRTUAL: Channel[] = DEFAULT_MATH_CHANNELS.map((c) => ({
@@ -24,10 +27,39 @@ const DEFAULT_MATH_VIRTUAL: Channel[] = DEFAULT_MATH_CHANNELS.map((c) => ({
 export function ChannelBrowser({
   activeChannels,
   onToggleChannel,
+  sessionId,
 }: ChannelBrowserProps) {
   const session = useSessionStore((s) => s.session);
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [showHidden, setShowHidden] = useState(false);
+
+  // Load hidden set from localStorage
+  useEffect(() => {
+    if (!sessionId || typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(`stint-hidden-channels-${sessionId}`);
+      if (raw) setHidden(new Set(JSON.parse(raw)));
+    } catch { /* ignore */ }
+  }, [sessionId]);
+
+  function toggleHidden(name: string) {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      try {
+        if (sessionId) {
+          window.localStorage.setItem(
+            `stint-hidden-channels-${sessionId}`,
+            JSON.stringify(Array.from(next)),
+          );
+        }
+      } catch { /* ignore */ }
+      return next;
+    });
+  }
 
   const grouped = useMemo(() => {
     if (!session) return {};
@@ -40,17 +72,18 @@ export function ChannelBrowser({
   }, [session]);
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return grouped;
-    const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
     const result: Record<string, Channel[]> = {};
     for (const [cat, channels] of Object.entries(grouped)) {
-      const match = channels.filter((ch) =>
-        ch.name.toLowerCase().includes(q)
-      );
+      const match = channels.filter((ch) => {
+        if (!showHidden && hidden.has(ch.name)) return false;
+        if (q && !ch.name.toLowerCase().includes(q)) return false;
+        return true;
+      });
       if (match.length > 0) result[cat] = match;
     }
     return result;
-  }, [grouped, search]);
+  }, [grouped, search, hidden, showHidden]);
 
   if (!session) return null;
 
@@ -66,6 +99,15 @@ export function ChannelBrowser({
         placeholder="Filter channels..."
         className="mx-2 mb-1 px-2 py-1 text-xs bg-muted/50 border border-border rounded focus:outline-none focus:ring-1 focus:ring-ring"
       />
+      {hidden.size > 0 && (
+        <button
+          onClick={() => setShowHidden((v) => !v)}
+          className="mx-2 mb-1 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground rounded text-left"
+        >
+          {showHidden ? "Hide" : "Show"} {hidden.size} hidden channel
+          {hidden.size === 1 ? "" : "s"}
+        </button>
+      )}
       <div className="overflow-y-auto flex-1">
         {Object.entries(filtered).map(([category, channels]) => {
           const isCollapsed = collapsed[category] ?? false;
@@ -94,33 +136,54 @@ export function ChannelBrowser({
                 <div className="flex flex-col">
                   {channels.map((ch) => {
                     const isActive = activeChannels.includes(ch.name);
+                    const isHidden = hidden.has(ch.name);
                     return (
-                      <button
+                      <div
                         key={ch.name}
-                        onClick={() => onToggleChannel(ch.name)}
-                        draggable
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData(
-                            "application/x-channel",
-                            ch.name
-                          );
-                          e.dataTransfer.setData("text/plain", ch.name);
-                          e.dataTransfer.effectAllowed = "copy";
-                        }}
                         className={cn(
-                          "flex items-center justify-between px-3 py-1 text-xs transition-colors cursor-grab active:cursor-grabbing",
+                          "group flex items-center text-xs transition-colors",
                           isActive
                             ? "bg-primary/10 text-primary"
-                            : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted/30",
+                          isHidden && "opacity-50 italic",
                         )}
                       >
-                        <span className="truncate">{ch.name}</span>
-                        {ch.units && (
-                          <span className="text-[10px] opacity-50 ml-2 shrink-0">
-                            {ch.units}
-                          </span>
-                        )}
-                      </button>
+                        <button
+                          onClick={() => onToggleChannel(ch.name)}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData(
+                              "application/x-channel",
+                              ch.name
+                            );
+                            e.dataTransfer.setData("text/plain", ch.name);
+                            e.dataTransfer.effectAllowed = "copy";
+                          }}
+                          className="flex items-center justify-between flex-1 min-w-0 px-3 py-1 cursor-grab active:cursor-grabbing"
+                        >
+                          <span className="truncate text-left">{ch.name}</span>
+                          {ch.units && (
+                            <span className="text-[10px] opacity-50 ml-2 shrink-0">
+                              {ch.units}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleHidden(ch.name);
+                          }}
+                          className="px-1.5 py-1 text-muted-foreground/40 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={isHidden ? "Show channel" : "Hide channel"}
+                          aria-label={isHidden ? "Show channel" : "Hide channel"}
+                        >
+                          {isHidden ? (
+                            <EyeOff className="h-3 w-3" />
+                          ) : (
+                            <Eye className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
