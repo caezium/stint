@@ -207,10 +207,47 @@ async def set_track_splits(track_id: int, body: SplitsBody):
     return {"ok": True}
 
 
+@router.delete("/tracks/{track_id}/sf-line")
+async def clear_track_sf_line(track_id: int):
+    db = await get_db()
+    try:
+        await db.execute("UPDATE tracks SET sf_line_json='' WHERE id=?", (track_id,))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
+@router.delete("/tracks/{track_id}/pit-lane")
+async def clear_track_pit_lane(track_id: int):
+    db = await get_db()
+    try:
+        await db.execute("UPDATE tracks SET pit_lane_json='[]' WHERE id=?", (track_id,))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
+@router.delete("/tracks/{track_id}/splits")
+async def clear_track_splits(track_id: int):
+    db = await get_db()
+    try:
+        await db.execute("UPDATE tracks SET split_lines_json='[]' WHERE id=?", (track_id,))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
 @router.delete("/tracks/{track_id}")
 async def delete_track(track_id: int):
     db = await get_db()
     try:
+        # Nullify FK references in sessions so the DELETE doesn't orphan them
+        # (FK constraints are ON, so the session rows would error otherwise
+        # for a track that has any bound sessions).
+        await db.execute("UPDATE sessions SET track_id = NULL WHERE track_id = ?", (track_id,))
         await db.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
         await db.commit()
         return {"ok": True}
