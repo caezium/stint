@@ -468,6 +468,44 @@ function DataSection() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [backfillPolling, setBackfillPolling] = useState(false);
+  const [jobStats, setJobStats] = useState<{
+    pending: number;
+    running: number;
+    ok: number;
+    error: number;
+    total: number;
+  } | null>(null);
+
+  // Poll /api/jobs for backfill progress whenever the user triggered one.
+  useEffect(() => {
+    if (!backfillPolling) return;
+    let cancelled = false;
+    async function tick() {
+      try {
+        const { fetchJobs } = await import("@/lib/api");
+        const jobs = await fetchJobs({ kind: "backfill_session" });
+        if (cancelled) return;
+        const stats = { pending: 0, running: 0, ok: 0, error: 0, total: jobs.length };
+        for (const j of jobs) {
+          if (j.status in stats) (stats as Record<string, number>)[j.status] += 1;
+        }
+        setJobStats(stats);
+        // Stop polling once the queue is drained.
+        if (stats.pending === 0 && stats.running === 0) {
+          setBackfillPolling(false);
+        }
+      } catch {
+        /* swallow */
+      }
+    }
+    tick();
+    const interval = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [backfillPolling]);
 
   async function doClear() {
     setBusy(true);
@@ -511,12 +549,10 @@ function DataSection() {
     setMsg(null);
     try {
       const r = await backfillAllSessions();
-      const c = r.counts;
       setMsg(
-        `Backfilled ${r.session_count} sessions: ${c.anomalies} anomalies, ${c.debrief} debriefs, ${c.coaching} coaching, ${c.tags} tags, ${c.nudge} nudges, ${c.plan} plans${
-          r.error_count ? ` · ${r.error_count} step errors` : ""
-        }.`,
+        `Queued ${r.queued} ${r.kind} jobs (${r.session_count} sessions). Progress below.`,
       );
+      setBackfillPolling(true);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -526,17 +562,45 @@ function DataSection() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-medium">Backfill AI signals</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Re-run anomaly detection, debrief, coaching points, tags, nudges, and
-            plan generation on every existing session. Safe to run repeatedly.
-          </p>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium">Backfill AI signals</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Queue a job per session to re-run anomaly detection, debrief,
+              coaching points, tags, and plan generation. Safe to run repeatedly.
+            </p>
+          </div>
+          <Button size="sm" variant="secondary" onClick={doBackfill} disabled={busy}>
+            {busy ? "Working…" : "Backfill"}
+          </Button>
         </div>
-        <Button size="sm" variant="secondary" onClick={doBackfill} disabled={busy}>
-          {busy ? "Working…" : "Backfill"}
-        </Button>
+        {jobStats && jobStats.total > 0 && (
+          <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs space-y-2">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Backfill progress</span>
+              <span className="font-mono">
+                {jobStats.ok + jobStats.error} / {jobStats.total}
+              </span>
+            </div>
+            <div className="h-1.5 rounded bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{
+                  width: `${((jobStats.ok + jobStats.error) / Math.max(1, jobStats.total)) * 100}%`,
+                }}
+              />
+            </div>
+            <div className="flex gap-3 text-[10px] text-muted-foreground">
+              <span>{jobStats.pending} pending</span>
+              <span>{jobStats.running} running</span>
+              <span className="text-green-400">{jobStats.ok} ok</span>
+              {jobStats.error > 0 && (
+                <span className="text-red-400">{jobStats.error} errors</span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-3">

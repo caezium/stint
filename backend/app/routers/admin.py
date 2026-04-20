@@ -3,12 +3,129 @@
 import os
 import shutil
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from ..database import get_db
 from ..xrk_service import CACHE_DIR, XRK_DIR
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# XRK parse diagnostics — compare raw libxrk output to what we persisted so
+# that we can diagnose "laps lost / laptimes wrong" bugs without a re-upload.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/sessions/{session_id}/parse-diagnostics")
+async def xrk_parse_diagnostics(session_id: str):
+    """Re-read the XRK file with libxrk and diff against persisted laps/channels.
+
+    Returns three sections:
+      - `persisted`: sessions row + laps in the DB
+      - `raw`: what libxrk currently reports (laps, metadata)
+      - `diff`: per-lap duration deltas and any missing/extra lap numbers
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT id, file_name, driver, vehicle, venue, log_date, log_time, "
+            "lap_count, best_lap_time_ms, total_duration_ms "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        srow = await cur.fetchone()
+        if not srow:
+            raise HTTPException(404, f"Session '{session_id}' not found")
+        persisted_session = dict(srow)
+
+        cur = await db.execute(
+            "SELECT num, start_time_ms, end_time_ms, duration_ms, is_pit_lap "
+            "FROM laps WHERE session_id = ? ORDER BY num",
+            (session_id,),
+        )
+        persisted_laps = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    # Find the original XRK on disk so we can re-parse it.
+    xrk_path = None
+    candidate_names = [persisted_session.get("file_name")] if persisted_session.get("file_name") else []
+    for name in candidate_names:
+        p = os.path.join(XRK_DIR, f"{session_id}_{name}") if name else None
+        if p and os.path.exists(p):
+            xrk_path = p
+            break
+    if xrk_path is None and os.path.isdir(XRK_DIR):
+        for fname in os.listdir(XRK_DIR):
+            if fname.startswith(session_id + "_"):
+                xrk_path = os.path.join(XRK_DIR, fname)
+                break
+
+    raw = None
+    raw_error = None
+    if xrk_path:
+        try:
+            import libxrk  # type: ignore
+            log = libxrk.aim_xrk(xrk_path)
+            raw_laps = []
+            if log.laps and log.laps.num_rows > 0:
+                for i in range(log.laps.num_rows):
+                    n = log.laps.column("num")[i].as_py()
+                    st = log.laps.column("start_time")[i].as_py()
+                    en = log.laps.column("end_time")[i].as_py()
+                    raw_laps.append({
+                        "num": n,
+                        "start_time_ms": st,
+                        "end_time_ms": en,
+                        "duration_ms": en - st,
+                    })
+            meta = {}
+            try:
+                for i in range(log.meta.num_rows):
+                    k = log.meta.column("key")[i].as_py()
+                    v = log.meta.column("value")[i].as_py()
+                    meta[k] = v
+            except Exception:
+                pass
+            raw = {"laps": raw_laps, "meta": meta, "path": xrk_path}
+        except Exception as e:
+            raw_error = str(e)
+    else:
+        raw_error = "XRK file not found on disk — cannot re-parse"
+
+    # Diff persisted vs raw
+    diff: list[dict] = []
+    if raw is not None:
+        by_num = {l["num"]: l for l in raw["laps"]}
+        for p in persisted_laps:
+            r = by_num.get(p["num"])
+            if r is None:
+                diff.append({"num": p["num"], "issue": "persisted but not in raw"})
+                continue
+            if r["duration_ms"] != p["duration_ms"]:
+                diff.append({
+                    "num": p["num"],
+                    "issue": "duration_mismatch",
+                    "persisted_ms": p["duration_ms"],
+                    "raw_ms": r["duration_ms"],
+                    "delta_ms": r["duration_ms"] - p["duration_ms"],
+                })
+        persisted_nums = {p["num"] for p in persisted_laps}
+        for r in raw["laps"]:
+            if r["num"] not in persisted_nums:
+                diff.append({"num": r["num"], "issue": "raw has lap not persisted"})
+
+    return {
+        "session_id": session_id,
+        "persisted": {
+            "session": persisted_session,
+            "laps": persisted_laps,
+        },
+        "raw": raw,
+        "raw_error": raw_error,
+        "diff": diff,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -20,9 +137,10 @@ router = APIRouter()
 
 @router.post("/admin/backfill")
 async def backfill_all_sessions():
-    """Re-run anomaly detection, debrief, coaching points, tags, nudge, and
-    plan generation on every session in the local DB. Each step is best-effort
-    per session so a single failure doesn't stop the loop.
+    """Enqueue a ``backfill_session`` job per session and return immediately.
+
+    The job worker processes sessions one at a time; the frontend polls
+    ``GET /api/jobs?kind=backfill_session`` to render a progress bar.
     """
     db = await get_db()
     try:
@@ -31,65 +149,20 @@ async def backfill_all_sessions():
     finally:
         await db.close()
 
-    counts = {
-        "anomalies": 0,
-        "debrief": 0,
-        "coaching": 0,
-        "tags": 0,
-        "nudge": 0,
-        "plan": 0,
-    }
-    errors: list[dict] = []
-
+    from ..jobs import enqueue_job
+    job_ids: list[int] = []
     for sid in ids:
         try:
-            from ..anomalies import detect_session_anomalies
-            await detect_session_anomalies(sid)
-            counts["anomalies"] += 1
+            jid = await enqueue_job("backfill_session", sid)
+            job_ids.append(jid)
         except Exception as e:
-            errors.append({"step": "anomalies", "session": sid, "error": str(e)})
-
-        try:
-            from ..debrief import generate_debrief
-            await generate_debrief(sid)
-            counts["debrief"] += 1
-        except Exception as e:
-            errors.append({"step": "debrief", "session": sid, "error": str(e)})
-
-        try:
-            from ..coaching import compute_session_coaching_points
-            await compute_session_coaching_points(sid)
-            counts["coaching"] += 1
-        except Exception as e:
-            errors.append({"step": "coaching", "session": sid, "error": str(e)})
-
-        try:
-            from ..tags import compute_session_tags
-            await compute_session_tags(sid)
-            counts["tags"] += 1
-        except Exception as e:
-            errors.append({"step": "tags", "session": sid, "error": str(e)})
-
-        try:
-            from .chat_assist import maybe_create_nudge
-            await maybe_create_nudge(sid)
-            counts["nudge"] += 1
-        except Exception as e:
-            errors.append({"step": "nudge", "session": sid, "error": str(e)})
-
-        try:
-            from ..plans import evaluate_prior_plan, generate_plan
-            await evaluate_prior_plan(sid)
-            await generate_plan(sid)
-            counts["plan"] += 1
-        except Exception as e:
-            errors.append({"step": "plan", "session": sid, "error": str(e)})
+            print(f"[backfill] enqueue failed for {sid}: {e}")
 
     return {
+        "queued": len(job_ids),
         "session_count": len(ids),
-        "counts": counts,
-        "error_count": len(errors),
-        "errors": errors[:20],  # cap response size
+        "kind": "backfill_session",
+        "note": "Poll /api/jobs?kind=backfill_session for progress.",
     }
 
 

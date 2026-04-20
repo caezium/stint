@@ -9,13 +9,19 @@ from .routers import (
     upload, sessions, channels, sectors, math_channels, layouts, profiles,
     export, compare, tracks, math_defaults, log_sheets, collections, reports, settings,
     admin, anomalies, debrief, chat, chat_assist, drivers,
+    annotations, proposals, jobs, share,
 )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    yield
+    from . import jobs as _jobs
+    _jobs.start_worker()
+    try:
+        yield
+    finally:
+        await _jobs.stop_worker()
 
 
 app = FastAPI(title="Stint", version="0.1.0", lifespan=lifespan)
@@ -48,6 +54,10 @@ app.include_router(debrief.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(chat_assist.router, prefix="/api")
 app.include_router(drivers.router, prefix="/api")
+app.include_router(annotations.router, prefix="/api")
+app.include_router(proposals.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
+app.include_router(share.router, prefix="/api")
 
 
 @app.get("/api/health")
