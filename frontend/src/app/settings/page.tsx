@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Select as CustomSelect } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,9 @@ import {
   fetchSetting,
   saveSetting,
   clearAllSessions,
+  fetchChatUsage,
+  backfillAllSessions,
+  type ChatUsageStats,
 } from "@/lib/api";
 import {
   useUnitsStore,
@@ -52,6 +56,13 @@ export default function SettingsPage() {
         description="External services used to enrich session data."
       >
         <IntegrationsSection />
+      </Section>
+
+      <Section
+        title="AI Coach"
+        description="Choose the model used by the in-session chat and review monthly token usage."
+      >
+        <AICoachSection />
       </Section>
 
       <Section
@@ -235,6 +246,141 @@ function IntegrationsSection() {
   );
 }
 
+// ---------- AI Coach (T3.7) ----------
+
+const MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: "anthropic/claude-sonnet-4.6", label: "Sonnet 4.6 — best balance (default)" },
+  { value: "anthropic/claude-haiku-4.5", label: "Haiku 4.5 — fast & cheap" },
+  { value: "anthropic/claude-opus-4.7", label: "Opus 4.7 — maximum reasoning" },
+  { value: "anthropic/claude-opus-4.6-fast", label: "Opus 4.6 fast — heavy + faster" },
+];
+
+function AICoachSection() {
+  const [model, setModel] = useState("");
+  const [custom, setCustom] = useState("");
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [usage, setUsage] = useState<ChatUsageStats | null>(null);
+
+  useEffect(() => {
+    fetchSetting("stint_llm_model").then((v) => {
+      const value = v || "";
+      const matched = MODEL_OPTIONS.find((o) => o.value === value);
+      if (value && !matched) {
+        setModel("__custom__");
+        setCustom(value);
+      } else {
+        setModel(value || MODEL_OPTIONS[0].value);
+      }
+    });
+    fetchChatUsage().then(setUsage);
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    setSavedMsg(null);
+    const value = model === "__custom__" ? custom.trim() : model;
+    try {
+      await saveSetting("stint_llm_model", value);
+      setSavedMsg("Saved");
+    } catch (e) {
+      setSavedMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Model</h3>
+        <p className="text-xs text-muted-foreground">
+          OpenRouter model id for the in-session chat. Sonnet is the best balance
+          of quality and speed; Haiku is ~5× cheaper and great for quick
+          questions.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <CustomSelect
+            value={model}
+            onValueChange={setModel}
+            options={[
+              ...MODEL_OPTIONS,
+              { value: "__custom__", label: "Custom model id…" },
+            ]}
+            triggerClassName="flex-1 min-w-[260px]"
+          />
+          {model === "__custom__" && (
+            <Input
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="provider/model-id"
+              className="flex-1"
+            />
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={save} disabled={busy}>
+            Save
+          </Button>
+          {savedMsg && (
+            <span className="text-xs text-muted-foreground">{savedMsg}</span>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Usage</h3>
+        {usage ? (
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <UsageStat
+              label="This month"
+              value={`${formatNum(usage.month_tokens_in)} in / ${formatNum(usage.month_tokens_out)} out`}
+            />
+            <UsageStat
+              label="All time"
+              value={`${formatNum(usage.total_tokens_in)} in / ${formatNum(usage.total_tokens_out)} out`}
+            />
+            <UsageStat
+              label="Assistant turns"
+              value={String(usage.message_count)}
+            />
+            <UsageStat
+              label="Models used"
+              value={
+                usage.per_model.length
+                  ? usage.per_model
+                      .slice(0, 3)
+                      .map((m) => `${m.model.split("/").pop()} (${m.n})`)
+                      .join(", ")
+                  : "—"
+              }
+            />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No chat usage yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UsageStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-border bg-muted/30 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className="font-mono mt-0.5 text-sm">{value}</div>
+    </div>
+  );
+}
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 // ---------- Units & Display ----------
 
 function UnitsSection() {
@@ -304,18 +450,14 @@ function Select<T extends string>({
   onChange: (v: string) => void;
   options: Record<string, string>;
 }) {
+  const selectOptions = Object.keys(options).map((k) => ({ value: k, label: options[k] }));
   return (
-    <select
+    <CustomSelect<string>
       value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="bg-muted border-none rounded px-2 py-1 text-xs text-foreground"
-    >
-      {Object.keys(options).map((k) => (
-        <option key={k} value={k}>
-          {options[k]}
-        </option>
-      ))}
-    </select>
+      onValueChange={onChange}
+      options={selectOptions}
+      triggerClassName="text-xs py-1"
+    />
   );
 }
 
@@ -364,8 +506,39 @@ function DataSection() {
     }
   }
 
+  async function doBackfill() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await backfillAllSessions();
+      const c = r.counts;
+      setMsg(
+        `Backfilled ${r.session_count} sessions: ${c.anomalies} anomalies, ${c.debrief} debriefs, ${c.coaching} coaching, ${c.tags} tags, ${c.nudge} nudges, ${c.plan} plans${
+          r.error_count ? ` · ${r.error_count} step errors` : ""
+        }.`,
+      );
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium">Backfill AI signals</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Re-run anomaly detection, debrief, coaching points, tags, nudges, and
+            plan generation on every existing session. Safe to run repeatedly.
+          </p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={doBackfill} disabled={busy}>
+          {busy ? "Working…" : "Backfill"}
+        </Button>
+      </div>
+
       <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium">Clear all sessions</h3>
