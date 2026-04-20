@@ -33,7 +33,19 @@ async def driver_summary(driver: str):
         session_rows = [dict(r) for r in await cur.fetchall()]
 
         if not session_rows:
-            raise HTTPException(404, f"No sessions for driver '{driver}'")
+            # Return an empty shape rather than 404 so the driver dashboard
+            # can render "no sessions" state instead of the browser showing a
+            # generic fetch error. Manually-created drivers (via POST /drivers)
+            # have no sessions until their first upload arrives.
+            return {
+                "driver": driver,
+                "session_count": 0,
+                "sessions": [],
+                "tag_counts": {},
+                "venues": [],
+                "pb_per_venue": {},
+                "tags_by_session": {},
+            }
 
         session_ids = [s["id"] for s in session_rows]
         placeholders = ",".join(["?"] * len(session_ids))
