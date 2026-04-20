@@ -1,16 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import {
   BarChart3,
   Download,
   FileText,
   MessageSquare,
   Pencil,
+  Share2,
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getExportPdfUrl } from "@/lib/api";
+import { ShareDialog } from "@/components/share-dialog";
 
 interface Props {
   sessionId: string;
@@ -40,6 +43,7 @@ export function ActionRail({
   recomputeMsg,
   debriefRecomputing,
 }: Props) {
+  const [shareOpen, setShareOpen] = useState(false);
   return (
     <div className="space-y-3">
       {/* Primary action */}
@@ -52,6 +56,10 @@ export function ActionRail({
           </span>
         </div>
       </Button>
+
+      {shareOpen && (
+        <ShareDialog sessionId={sessionId} onClose={() => setShareOpen(false)} />
+      )}
 
       <Link href={`/sessions/${sessionId}/analysis`} className="block">
         <Button variant="secondary" className="w-full justify-start gap-2">
@@ -97,6 +105,15 @@ export function ActionRail({
         >
           <Sparkles className="h-3.5 w-3.5" />
           {debriefRecomputing ? "Regenerating…" : "Regenerate debrief"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start gap-2 text-xs"
+          onClick={() => setShareOpen(true)}
+        >
+          <Share2 className="h-3.5 w-3.5" />
+          Share with coach
         </Button>
         {hasTrack && trackId != null && (
           <Link href={`/tracks/${trackId}/edit`} className="block">

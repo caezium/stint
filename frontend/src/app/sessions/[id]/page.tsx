@@ -22,6 +22,8 @@ import {
 } from "@/lib/api";
 import { LogSheetPanel } from "@/components/log-sheet-panel";
 import { AnomalyPanel } from "@/components/anomaly-panel";
+import { AnnotationsPanel } from "@/components/annotations-panel";
+import { ProposalsPanel } from "@/components/proposals-panel";
 import {
   DebriefHeadline,
   DrivingFingerprintCard,
@@ -240,6 +242,10 @@ export default function SessionDetailPage() {
             {sessionTrend && <SessionTrendCard insight={sessionTrend} />}
 
             <AnomalyPanel sessionId={id} defaultCollapsed />
+
+            <ProposalsPanel sessionId={id} />
+
+            <AnnotationsPanel sessionId={id} laps={session.laps} />
 
             {/* Lap times table */}
             <Card>
