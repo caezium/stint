@@ -58,8 +58,12 @@ export function AnomalyPanel({ sessionId, defaultCollapsed = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [recomputing, setRecomputing] = useState(false);
   const [expanded, setExpanded] = useState(!defaultCollapsed);
+  // Pit-lap info notes are noisy when every out-lap is flagged. Let the user
+  // hide them behind a toggle; hidden by default.
+  const [showPitLapNotes, setShowPitLapNotes] = useState(false);
 
-  // Auto-expand when any critical anomaly is present.
+  // Auto-expand when any critical anomaly is present; stay collapsed when
+  // only info-level notes exist (karting sessions produce lots of info).
   useEffect(() => {
     if (data && data.counts.critical > 0) setExpanded(true);
   }, [data?.counts.critical]);
@@ -169,14 +173,27 @@ export function AnomalyPanel({ sessionId, defaultCollapsed = false }: Props) {
 
         {!loading && !error && data && total > 0 && expanded && (
           <div className="space-y-1.5 pt-1">
+            {data.items.some((a) => a.type === "pit_lap") && (
+              <div className="flex items-center gap-2 pb-1 text-[11px] text-muted-foreground">
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={() => setShowPitLapNotes((v) => !v)}
+                >
+                  {showPitLapNotes ? "Hide" : "Show"} pit-lap notes
+                </button>
+              </div>
+            )}
             {SEVERITY_ORDER.flatMap((sev) =>
               data.items
                 .filter((a) => a.severity === sev)
-                .map((a: Anomaly) => {
+                .filter((a) => showPitLapNotes || a.type !== "pit_lap")
+                .map((a: Anomaly, idx: number) => {
                   const sl = severityLabel(a.severity);
+                  const key = `${sev}-${a.id ?? `${a.type}-${a.lap_num ?? "x"}-${a.channel ?? "x"}-${idx}`}`;
                   return (
                     <div
-                      key={a.id}
+                      key={key}
                       className={`rounded-sm px-3 py-2 text-sm ${severityStyle(a.severity)}`}
                     >
                       <div className="flex items-start justify-between gap-3">
