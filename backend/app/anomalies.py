@@ -915,6 +915,90 @@ async def _set_pit_laps(session_id: str, pit_laps: set[int]) -> None:
         await db.close()
 
 
+async def _detect_user_alarms(
+    session_id: str, channels: list[str], laps: list[dict]
+) -> list[Anomaly]:
+    """Evaluate user-defined channel_alarms against the session and emit
+    anomalies. Phase 19.1."""
+    # Resolve session's driver so we know which 'driver'-scoped alarms apply.
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT driver FROM sessions WHERE id = ?", (session_id,)
+        )
+        srow = await cur.fetchone()
+        driver = (srow["driver"] if srow else "") or ""
+        cur = await db.execute(
+            """SELECT id, scope, session_id, driver, channel, kind,
+                      threshold_a, threshold_b, severity, message
+               FROM channel_alarms
+               WHERE scope = 'global'
+                  OR (scope = 'driver' AND driver = ?)
+                  OR (scope = 'session' AND session_id = ?)""",
+            (driver, session_id),
+        )
+        alarm_rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    if not alarm_rows:
+        return []
+
+    out: list[Anomaly] = []
+    for alarm in alarm_rows:
+        ch_name = _match_channel(channels, [alarm["channel"]])
+        if not ch_name:
+            continue
+        read = _read_channel_with_time(session_id, ch_name)
+        if read is None:
+            continue
+        ts_ms, vals = read
+        if len(vals) == 0:
+            continue
+        arr = np.asarray(vals, dtype=np.float64)
+
+        a = alarm["threshold_a"]
+        b = alarm["threshold_b"]
+        kind = alarm["kind"]
+        if kind == "min" and a is not None:
+            mask = arr < float(a)
+            desc = f"{ch_name} < {a}"
+        elif kind == "max" and a is not None:
+            mask = arr > float(a)
+            desc = f"{ch_name} > {a}"
+        elif kind == "between" and a is not None and b is not None:
+            mask = (arr >= float(a)) & (arr <= float(b))
+            desc = f"{ch_name} in [{a}, {b}]"
+        elif kind == "outside" and a is not None and b is not None:
+            mask = (arr < float(a)) | (arr > float(b))
+            desc = f"{ch_name} outside [{a}, {b}]"
+        else:
+            continue
+
+        hits = int(mask.sum())
+        if hits == 0:
+            continue
+
+        first_idx = int(np.argmax(mask))
+        first_ts = float(ts_ms[first_idx])
+        lap_num, pct, in_lap = _lap_pct_for_timestamp(laps, first_ts)
+        message = (alarm.get("message") or "").strip() or f"{desc} ({hits} samples)"
+
+        out.append(
+            Anomaly(
+                type="user_alarm",
+                severity=alarm.get("severity") or "warning",
+                lap_num=lap_num,
+                channel=ch_name,
+                message=message,
+                metric_value=float(hits),
+                distance_pct=pct,
+                time_in_lap_ms=in_lap,
+            )
+        )
+    return out
+
+
 async def detect_session_anomalies(session_id: str) -> list[dict]:
     """Run every detector, persist findings, return list of dicts."""
     channels = _list_channels(session_id)
@@ -943,6 +1027,12 @@ async def detect_session_anomalies(session_id: str) -> list[dict]:
     findings.extend(_detect_traction_loss(session_id, channels, laps))
     findings.extend(_detect_pedal_tps_mismatch(session_id, channels))
     findings.extend(_detect_gear_shift_latency(session_id, channels, laps))
+    # Phase 19.1: user-defined alarms evaluate after the built-in detectors
+    # so operators can add whatever their hardware cares about.
+    try:
+        findings.extend(await _detect_user_alarms(session_id, channels, laps))
+    except Exception as e:
+        print(f"[anomalies] user alarm evaluation failed for {session_id}: {e}")
 
     await _clear_existing(session_id)
     await _persist(session_id, findings)

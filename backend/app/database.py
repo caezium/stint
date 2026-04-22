@@ -454,6 +454,48 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Channel alarms (Phase 19) — user-defined thresholds that emit anomalies
+    # alongside the hard-coded detectors. Scope: 'session' binds to a specific
+    # session row; 'driver' fires for every session by that driver; 'global'
+    # fires for every session.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS channel_alarms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL DEFAULT 'global',
+            session_id TEXT,
+            driver TEXT DEFAULT '',
+            channel TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            threshold_a REAL,
+            threshold_b REAL,
+            severity TEXT NOT NULL DEFAULT 'warning',
+            message TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_channel_alarms_scope "
+        "ON channel_alarms(scope, driver)"
+    )
+
+    # Per-(session, channel) display settings (Phase 19.2). Lets a user
+    # override units, decimals, colour, or hide a channel without touching
+    # the underlying channel metadata.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS channel_settings (
+            session_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            unit_override TEXT DEFAULT '',
+            decimal_override INTEGER,
+            color TEXT DEFAULT '',
+            hidden INTEGER NOT NULL DEFAULT 0,
+            sort_index INTEGER,
+            PRIMARY KEY (session_id, channel),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
     # Reference laps (Phase 15) — first-class "this is my PB / benchmark" lap
     # keyed by (driver, venue). Used by the compare page, track-map delta
     # overlay, and the hero "vs PB: +0.42s" pill. ON DELETE SET NULL so that

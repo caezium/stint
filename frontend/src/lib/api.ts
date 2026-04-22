@@ -1572,6 +1572,84 @@ export async function fetchTrackOverlay(
   return res.json();
 }
 
+// ---- Channel alarms (Phase 19) ----
+
+export type AlarmScope = "global" | "driver" | "session";
+export type AlarmKind = "min" | "max" | "between" | "outside";
+export type AlarmSeverity = "info" | "warning" | "critical";
+
+export interface ChannelAlarm {
+  id: number;
+  scope: AlarmScope;
+  session_id: string | null;
+  driver: string;
+  channel: string;
+  kind: AlarmKind;
+  threshold_a: number | null;
+  threshold_b: number | null;
+  severity: AlarmSeverity;
+  message: string;
+  created_at: string;
+}
+
+export interface AlarmInput {
+  scope?: AlarmScope;
+  session_id?: string | null;
+  driver?: string | null;
+  channel: string;
+  kind: AlarmKind;
+  threshold_a?: number | null;
+  threshold_b?: number | null;
+  severity?: AlarmSeverity;
+  message?: string | null;
+}
+
+export async function fetchAlarms(params?: {
+  session_id?: string;
+  driver?: string;
+}): Promise<ChannelAlarm[]> {
+  const q = new URLSearchParams();
+  if (params?.session_id) q.set("session_id", params.session_id);
+  if (params?.driver) q.set("driver", params.driver);
+  const res = await fetch(`/api/alarms?${q.toString()}`);
+  if (!res.ok) throw new Error(`Failed to fetch alarms: ${res.status}`);
+  return res.json();
+}
+
+export async function createAlarm(a: AlarmInput): Promise<{ id: number }> {
+  const res = await fetch(`/api/alarms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(a),
+  });
+  if (!res.ok) throw new Error(`Failed to create alarm: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteAlarm(id: number): Promise<void> {
+  const res = await fetch(`/api/alarms/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete alarm: ${res.status}`);
+}
+
+export interface AlarmPreview {
+  channel: string;
+  triggering_laps: { lap_num: number; samples: number }[];
+  sample_count: number;
+}
+
+export async function previewAlarm(
+  sessionId: string,
+  alarm: AlarmInput
+): Promise<AlarmPreview> {
+  const res = await fetch(`/api/sessions/${sessionId}/alarms/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alarm }),
+  });
+  if (!res.ok) throw new Error(`Failed to preview alarm: ${res.status}`);
+  return res.json();
+}
+
 // ---- Reference laps (Phase 15) ----
 
 export type ReferenceLapKind = "user" | "pb" | "track-record";
