@@ -343,6 +343,13 @@ export default function SessionsPage() {
                   <div className="mb-2 space-y-1">
                     <AnomalyBadge sessionId={session.id} />
                     <SessionTagBadges sessionId={session.id} tags={session.tags} />
+                    {session.weather && (
+                      <div className="text-[11px] text-muted-foreground">
+                        {weatherIcon(session.weather)} {session.weather}
+                        {session.air_temp != null &&
+                          ` · ${session.air_temp.toFixed(0)}°C`}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-1.5 text-sm text-muted-foreground">
                     <div className="flex justify-between">
@@ -522,4 +529,17 @@ export default function SessionsPage() {
       )}
     </div>
   );
+}
+
+/** Phase 25: emoji glyph for the weather description chip on session cards. */
+function weatherIcon(w: string): string {
+  const s = w.toLowerCase();
+  if (s.includes("thunder")) return "⛈️";
+  if (s.includes("snow")) return "❄️";
+  if (s.includes("rain") || s.includes("shower") || s.includes("drizzle"))
+    return "🌧️";
+  if (s.includes("fog") || s.includes("mist") || s.includes("haze")) return "🌫️";
+  if (s.includes("cloud") || s.includes("overcast")) return "☁️";
+  if (s.includes("clear") || s.includes("sun")) return "☀️";
+  return "🌤️";
 }

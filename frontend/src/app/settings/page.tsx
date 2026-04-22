@@ -236,12 +236,57 @@ function IntegrationsSection() {
         description="Used to backfill historical weather for sessions that have a log date. Requires a One Call 3.0 subscription."
         placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
       />
+      <WeatherBackfillRow />
       <ApiKeyRow
         settingKey="openrouter_api_key"
         label="OpenRouter API key"
         description="Powers the 'Ask your data' chat on each session. Routes to Claude Sonnet 4.5 by default. Get a key at openrouter.ai/keys. Can also be set via the OPENROUTER_API_KEY env var."
         placeholder="sk-or-v1-..."
       />
+    </div>
+  );
+}
+
+/** Phase 25.3 — "Re-fetch weather for all sessions" button. */
+function WeatherBackfillRow() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/log-sheets/fetch-weather-all`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Failed: ${res.status}`);
+      const j = await res.json();
+      setMsg(
+        `Queued ${j.enqueued} of ${j.total_candidates} missing-weather session${
+          j.total_candidates === 1 ? "" : "s"
+        }. The background worker will process them shortly.`,
+      );
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="border-t border-border/40 pt-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Backfill weather for existing sessions</div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Enqueues a background fetch for every session whose log sheet has
+            no weather yet. Useful after adding an OpenWeather key, or if the
+            keyless Open-Meteo fallback was unavailable at upload time.
+          </p>
+        </div>
+        <Button size="sm" variant="secondary" onClick={run} disabled={busy}>
+          {busy ? "Queuing…" : "Re-fetch all"}
+        </Button>
+      </div>
+      {msg && <p className="text-xs text-muted-foreground mt-2">{msg}</p>}
     </div>
   );
 }

@@ -252,6 +252,16 @@ async def upload_file(file: UploadFile):
     except Exception as e:
         print(f"[tags] computation failed for {result['session_id']}: {e}")
 
+    # Phase 25: auto-fetch historical weather in the background so the
+    # session card chip + hero badge populate without the user having to
+    # hit "Fetch weather" on the log sheet. Off the hot path — failures
+    # here must not block the upload response.
+    try:
+        from ..jobs import enqueue_job
+        await enqueue_job("fetch_weather", result["session_id"])
+    except Exception as e:
+        print(f"[weather] enqueue failed for {result['session_id']}: {e}")
+
     # Build proactive nudge (T3.3). Non-fatal.
     try:
         from .chat_assist import maybe_create_nudge
