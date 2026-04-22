@@ -571,6 +571,62 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         "ON reference_laps(driver, venue)"
     )
 
+    # Corners (Phase 26.1) — per-session contiguous high-lateral-g regions
+    # detected on upload. Surfaced as map arcs and as an in-corner filter in
+    # the channels report.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS corners (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            corner_num INTEGER NOT NULL,
+            start_distance_m REAL,
+            end_distance_m REAL,
+            peak_lat_g REAL,
+            entry_speed REAL,
+            exit_speed REAL,
+            min_speed REAL,
+            direction TEXT,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_corners_session "
+        "ON corners(session_id, corner_num)"
+    )
+
+    # Structured vehicle setup (Phase 26.4) — gear ratios / tire data / notes
+    # persisted per session. Complements the existing session_log_sheets free-
+    # form notes with a structured schema the UI can render as a form.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS session_setups (
+            session_id TEXT PRIMARY KEY,
+            gear_ratios_json TEXT DEFAULT '[]',
+            tire_compound TEXT DEFAULT '',
+            tire_pressures_json TEXT DEFAULT '{}',
+            chassis_notes TEXT DEFAULT '',
+            front_wing TEXT DEFAULT '',
+            rear_wing TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
+    # Vehicle-level default setup templates so re-entering the same values for
+    # every session becomes optional.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS vehicle_setup_templates (
+            vehicle_id INTEGER PRIMARY KEY,
+            gear_ratios_json TEXT DEFAULT '[]',
+            tire_compound TEXT DEFAULT '',
+            tire_pressures_json TEXT DEFAULT '{}',
+            chassis_notes TEXT DEFAULT '',
+            front_wing TEXT DEFAULT '',
+            rear_wing TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+        )"""
+    )
+
     # Backfill drivers / vehicles from legacy sessions whose rows were written
     # before the upload pipeline auto-upserted driver_id / vehicle_id. Runs at
     # every startup; idempotent because of the LEFT JOIN check on NULL ids.

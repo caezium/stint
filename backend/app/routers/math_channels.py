@@ -220,6 +220,53 @@ def _validate_ast(node):
         _validate_ast(child)
 
 
+# ---------------------------------------------------------------------------
+# Math channel presets (Phase 26.2)
+# ---------------------------------------------------------------------------
+
+MATH_PRESETS = [
+    {
+        "name": "UWA",
+        "units": "ratio",
+        "formula": "ABS(LAT_ACCEL) / (GPS_SPEED * GPS_SPEED / 400 + 0.001)",
+        "description": (
+            "Understeer Warning Angle — ratio of actual lateral acceleration "
+            "to the cornering force expected from speed (v²/400). Values > 1 "
+            "suggest over-grip / oversteer; values much below 1 suggest "
+            "understeer. Pairs well with the 'in-corner' channels report "
+            "filter."
+        ),
+    },
+    {
+        "name": "ThrottleSmoothed",
+        "units": "%",
+        "formula": "EMA(Throttle, 0.2)",
+        "description": "Exponentially smoothed throttle. Useful when coaching "
+                        "pedal consistency through long corners.",
+    },
+    {
+        "name": "BrakeRolling",
+        "units": "%",
+        "formula": "ROLL_AVG(Brake, 5)",
+        "description": "5-sample rolling average of brake pressure to see "
+                        "sustained braking events without sample-level noise.",
+    },
+    {
+        "name": "SpeedDerivative",
+        "units": "m/s²",
+        "formula": "(GPS_SPEED - TIME_SHIFT(GPS_SPEED, 100)) / 3.6 / 0.1",
+        "description": "100ms finite-difference longitudinal acceleration "
+                        "derived from GPS speed.",
+    },
+]
+
+
+@router.get("/math-channels/presets")
+async def list_math_presets():
+    """Named math-channel templates the UI can offer in one click."""
+    return MATH_PRESETS
+
+
 @router.post("/sessions/{session_id}/math-channels")
 async def create_math_channel(session_id: str, req: MathChannelRequest):
     """

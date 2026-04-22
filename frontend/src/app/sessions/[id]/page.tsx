@@ -28,6 +28,9 @@ import { AnnotationsPanel } from "@/components/annotations-panel";
 import { ProposalsPanel } from "@/components/proposals-panel";
 import { SplitReportPanel } from "@/components/split-report-panel";
 import { ChannelsReportPanel } from "@/components/channels-report-panel";
+import { CornersPanel } from "@/components/corners-panel";
+import { FuelPanel } from "@/components/fuel-panel";
+import { SetupPanel } from "@/components/setup-panel";
 import { ChannelTagsOverlay } from "@/components/channel-tags-overlay";
 import {
   DebriefHeadline,
@@ -276,6 +279,12 @@ export default function SessionDetailPage() {
             <SplitReportPanel sessionId={id} />
 
             <ChannelsReportPanel sessionId={id} />
+
+            <CornersPanel sessionId={id} />
+
+            <FuelPanel sessionId={id} />
+
+            <SetupPanel sessionId={id} />
 
             <AnnotationsPanel sessionId={id} laps={session.laps} />
 

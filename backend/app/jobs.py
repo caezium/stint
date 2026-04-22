@@ -108,12 +108,17 @@ async def _run_one(job: dict) -> None:
             from .coaching import compute_session_coaching_points
             from .tags import compute_session_tags
             from .plans import evaluate_prior_plan, generate_plan
+            from .corners import detect_corners
             await detect_session_anomalies(sid)
             await generate_debrief(sid)
             await compute_session_coaching_points(sid)
             await compute_session_tags(sid)
             await evaluate_prior_plan(sid)
             await generate_plan(sid)
+            try:
+                await detect_corners(sid)
+            except Exception:
+                pass
         elif kind == "purge_trash":
             # Phase 22.4: hard-delete soft-deleted sessions older than 7 days
             from .database import get_db

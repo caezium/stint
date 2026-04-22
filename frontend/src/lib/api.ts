@@ -2121,3 +2121,93 @@ export function downloadBlob(blob: Blob, filename: string): void {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }
+
+// ---- Corners / fuel / setup (Phase 26) ----
+
+export interface Corner {
+  corner_num: number;
+  start_distance_m: number;
+  end_distance_m: number;
+  peak_lat_g: number;
+  entry_speed: number;
+  exit_speed: number;
+  min_speed: number;
+  direction: "left" | "right";
+}
+
+export async function fetchCorners(sessionId: string): Promise<Corner[]> {
+  const res = await fetch(`/api/sessions/${sessionId}/corners`);
+  if (!res.ok) throw new Error(`Failed to fetch corners: ${res.status}`);
+  return (await res.json()).corners;
+}
+
+export async function detectCornersForSession(
+  sessionId: string
+): Promise<{ detected: number; corners: Corner[] }> {
+  const res = await fetch(`/api/sessions/${sessionId}/corners/detect`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to detect corners: ${res.status}`);
+  return res.json();
+}
+
+export interface FuelSummary {
+  has_fuel_channel: boolean;
+  channel?: string;
+  per_lap: {
+    lap_num: number;
+    start_level: number | null;
+    end_level: number | null;
+    delta: number | null;
+    is_pit_lap: boolean;
+  }[];
+  avg_delta_per_lap?: number | null;
+  current_level?: number | null;
+  laps_remaining?: number | null;
+}
+
+export async function fetchFuelSummary(sessionId: string): Promise<FuelSummary> {
+  const res = await fetch(`/api/sessions/${sessionId}/fuel`);
+  if (!res.ok) throw new Error(`Failed to fetch fuel summary: ${res.status}`);
+  return res.json();
+}
+
+export interface SetupData {
+  gear_ratios: number[];
+  tire_compound: string;
+  tire_pressures: Record<string, number>;
+  chassis_notes: string;
+  front_wing: string;
+  rear_wing: string;
+}
+
+export async function fetchSessionSetup(sessionId: string): Promise<SetupData> {
+  const res = await fetch(`/api/sessions/${sessionId}/setup`);
+  if (!res.ok) throw new Error(`Failed to fetch setup: ${res.status}`);
+  return res.json();
+}
+
+export async function saveSessionSetup(
+  sessionId: string,
+  setup: SetupData
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/setup`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(setup),
+  });
+  if (!res.ok) throw new Error(`Failed to save setup: ${res.status}`);
+}
+
+export interface MathPreset {
+  name: string;
+  units: string;
+  formula: string;
+  description: string;
+}
+
+export async function fetchMathPresets(): Promise<MathPreset[]> {
+  const res = await fetch(`/api/math-channels/presets`);
+  if (!res.ok) throw new Error(`Failed to fetch math presets: ${res.status}`);
+  return res.json();
+}
