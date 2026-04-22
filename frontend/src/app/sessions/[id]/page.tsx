@@ -13,12 +13,14 @@ import {
   assignSession,
   fetchLapDiagnostics,
   recomputeFromTrack,
+  fetchDefaultReference,
   type LapDiagnostic,
   type SessionDetail,
   type TrackData,
   type Driver,
   type Vehicle,
   type Track,
+  type ReferenceLap,
 } from "@/lib/api";
 import { LogSheetPanel } from "@/components/log-sheet-panel";
 import { AnomalyPanel } from "@/components/anomaly-panel";
@@ -67,6 +69,7 @@ export default function SessionDetailPage() {
   const [showDiag, setShowDiag] = useState(false);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [boundTrack, setBoundTrack] = useState<Track | null>(null);
+  const [referenceLap, setReferenceLap] = useState<ReferenceLap | null>(null);
   const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +90,9 @@ export default function SessionDetailPage() {
 
   useEffect(() => {
     if (!id) return;
+    fetchDefaultReference(id)
+      .then((r) => setReferenceLap(r.reference))
+      .catch(() => setReferenceLap(null));
     Promise.all([
       fetchSession(id).then(setSession),
       fetchTrack(id).then(setTrack).catch(() => null),
@@ -198,6 +204,14 @@ export default function SessionDetailPage() {
           durationMs={session.total_duration_ms ?? null}
           cleanLapCount={cons?.clean_lap_count ?? null}
           covPct={covPct}
+          referenceMs={referenceLap?.duration_ms ?? null}
+          referenceLabel={
+            referenceLap
+              ? referenceLap.kind === "pb"
+                ? "vs PB"
+                : `vs ${referenceLap.name || "ref"}`
+              : null
+          }
         />
 
         <div className="mt-4 grid grid-cols-1 lg:grid-cols-[1fr_240px] gap-6 items-start">

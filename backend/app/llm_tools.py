@@ -277,6 +277,17 @@ TOOL_SCHEMAS: list[dict] = [
         ),
         {"type": "object", "properties": {}, "required": []},
     ),
+    _fn(
+        "get_reference_lap",
+        (
+            "Return the driver's applicable reference lap (PB or user-picked) "
+            "for the current session's venue. Use this to ground statements "
+            "like \"you're X seconds off your PB\" or \"your reference lap at "
+            "this track was set on session Y, lap Z\". Returns null when the "
+            "driver has no prior lap data at this venue."
+        ),
+        {"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 
@@ -791,6 +802,47 @@ async def tool_get_session_annotations(session_id: str) -> dict:
     return {"count": len(rows), "annotations": rows}
 
 
+async def tool_get_reference_lap(session_id: str) -> dict:
+    """Resolve the reference lap (PB or user-picked) for this session's
+    driver + venue. Returns null-ish shape when no prior lap exists."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT driver, venue FROM sessions WHERE id = ?", (session_id,)
+        )
+        s = await cur.fetchone()
+        if not s:
+            return {"reference": None, "reason": "session not found"}
+        driver = (s["driver"] or "").strip()
+        venue = (s["venue"] or "").strip()
+        if not driver or not venue:
+            return {"reference": None, "reason": "no driver/venue on session"}
+        cur = await db.execute(
+            """SELECT id, session_id, lap_num, driver, venue, name, kind,
+                      is_default, created_at FROM reference_laps
+               WHERE driver = ? AND venue = ?
+               ORDER BY is_default DESC,
+                        CASE kind WHEN 'user' THEN 0 WHEN 'pb' THEN 1 ELSE 2 END,
+                        created_at DESC
+               LIMIT 1""",
+            (driver, venue),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return {"reference": None, "reason": "no reference for this (driver, venue)"}
+        ref = dict(row)
+        if ref["session_id"]:
+            cur = await db.execute(
+                "SELECT duration_ms FROM laps WHERE session_id = ? AND num = ?",
+                (ref["session_id"], ref["lap_num"]),
+            )
+            lap = await cur.fetchone()
+            ref["duration_ms"] = int(lap[0]) if lap else None
+        return {"reference": ref}
+    finally:
+        await db.close()
+
+
 async def tool_apply_math_channel(
     session_id: str, name: str, expression: str
 ) -> dict:
@@ -907,6 +959,15 @@ def summarize_tool_result(name: str, input: dict, result: Any) -> str:
             return f"proposed math channel '{result.get('name', '')}'"
         if name == "get_session_annotations":
             return f"{result.get('count', 0)} driver notes"
+        if name == "get_reference_lap":
+            r = result.get("reference") or {}
+            if r:
+                dur = r.get("duration_ms")
+                return (
+                    f"ref L{r.get('lap_num')} @ {r.get('venue')} "
+                    f"· {dur}ms" if dur else f"ref L{r.get('lap_num')}"
+                )
+            return result.get("reason") or "no reference"
     except Exception:
         return ""
     return ""
@@ -994,6 +1055,8 @@ async def execute_tool(name: str, input: dict, session_id: str) -> dict:
             )
         if name == "get_session_annotations":
             return await tool_get_session_annotations(session_id)
+        if name == "get_reference_lap":
+            return await tool_get_reference_lap(session_id)
         return {"error": f"Unknown tool: {name}"}
     except KeyError as e:
         return {"error": f"Missing required input field: {e}"}

@@ -454,10 +454,41 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Reference laps (Phase 15) — first-class "this is my PB / benchmark" lap
+    # keyed by (driver, venue). Used by the compare page, track-map delta
+    # overlay, and the hero "vs PB: +0.42s" pill. ON DELETE SET NULL so that
+    # deleting the backing session downgrades the reference to an orphan row
+    # that the backfill re-runs on next startup.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS reference_laps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            lap_num INTEGER NOT NULL,
+            driver TEXT DEFAULT '',
+            venue TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'user',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reference_laps_driver_venue "
+        "ON reference_laps(driver, venue)"
+    )
+
     # Backfill drivers / vehicles from legacy sessions whose rows were written
     # before the upload pipeline auto-upserted driver_id / vehicle_id. Runs at
     # every startup; idempotent because of the LEFT JOIN check on NULL ids.
     await _backfill_driver_vehicle_ids(db)
+
+    # Auto-seed one kind='pb' reference lap per (driver, venue). Idempotent:
+    # only inserts if no 'pb' reference exists for that pair yet.
+    try:
+        await _backfill_pb_references(db)
+    except Exception as e:
+        print(f"[migration] PB reference backfill failed: {e}")
 
     # One-shot migration of legacy chat-agent proposals into the proposals
     # table. Idempotent — matches legacy rows by their distinct naming.
@@ -465,6 +496,63 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         await _migrate_proposals_one_shot(db)
     except Exception as e:
         print(f"[migration] proposals migration failed: {e}")
+
+
+async def _backfill_pb_references(db: aiosqlite.Connection) -> None:
+    """Seed reference_laps with one 'pb' row per (driver, venue).
+
+    For each (driver, venue) pair represented in sessions, find the session+lap
+    whose lap time is the minimum, and create a kind='pb' reference if one
+    doesn't already exist. Makes the compare page + track-map delta overlay
+    immediately meaningful on existing databases.
+    """
+    # Already-seeded pairs (driver, venue)
+    cur = await db.execute(
+        "SELECT driver, venue FROM reference_laps WHERE kind = 'pb'"
+    )
+    seeded = {(r[0] or "", r[1] or "") for r in await cur.fetchall()}
+
+    # For every (driver, venue), pick the session with the lowest best_lap_time.
+    cur = await db.execute(
+        """SELECT driver, venue, id AS session_id, best_lap_time_ms
+           FROM sessions
+           WHERE best_lap_time_ms > 0
+             AND driver IS NOT NULL AND TRIM(driver) != ''
+             AND venue IS NOT NULL AND TRIM(venue) != ''"""
+    )
+    rows = [dict(r) for r in await cur.fetchall()]
+    pb_by_pair: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["driver"].strip(), r["venue"].strip())
+        if key in seeded:
+            continue
+        prev = pb_by_pair.get(key)
+        if prev is None or r["best_lap_time_ms"] < prev["best_lap_time_ms"]:
+            pb_by_pair[key] = r
+
+    for (driver, venue), r in pb_by_pair.items():
+        # Need the actual lap_num whose duration_ms == best_lap_time_ms.
+        cur = await db.execute(
+            """SELECT num FROM laps
+               WHERE session_id = ? AND duration_ms = ? AND num > 0
+               ORDER BY num LIMIT 1""",
+            (r["session_id"], r["best_lap_time_ms"]),
+        )
+        lap_row = await cur.fetchone()
+        if not lap_row:
+            continue
+        await db.execute(
+            """INSERT INTO reference_laps
+               (session_id, lap_num, driver, venue, name, kind, is_default)
+               VALUES (?, ?, ?, ?, ?, 'pb', 1)""",
+            (
+                r["session_id"],
+                int(lap_row[0]),
+                driver,
+                venue,
+                f"PB · {driver} · {venue}",
+            ),
+        )
 
 
 async def _migrate_proposals_one_shot(db: aiosqlite.Connection) -> None:
