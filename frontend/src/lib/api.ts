@@ -1961,3 +1961,135 @@ export async function fetchLapDeltaPoints(
   if (!res.ok) throw new Error(`Failed to fetch delta points: ${res.status}`);
   return res.json();
 }
+
+// ---- Report Builder (Phase 23) ----
+
+export type ReportStat =
+  | "min"
+  | "max"
+  | "avg"
+  | "p50"
+  | "p90"
+  | "p99"
+  | "std"
+  | "count";
+
+export type ReportLapFilter = "all" | "clean" | "clean_no_pit";
+
+export interface ReportSpec {
+  name?: string;
+  channels: string[];
+  stats: ReportStat[];
+  lap_filter: ReportLapFilter;
+  session_ids: string[];
+}
+
+export interface ReportLapRow {
+  num: number;
+  duration_ms: number;
+  is_pit_lap: boolean;
+  cells: Record<string, Partial<Record<ReportStat, number | null>>>;
+}
+
+export interface ReportSessionResult {
+  session_id: string;
+  error?: string;
+  session_meta?: {
+    driver?: string;
+    venue?: string;
+    log_date?: string;
+    best_lap_time_ms?: number;
+  };
+  channels?: string[];
+  stats?: ReportStat[];
+  lap_filter?: ReportLapFilter;
+  laps?: ReportLapRow[];
+  session_wide?: Record<string, Partial<Record<ReportStat, number | null>>>;
+}
+
+export interface ReportResponse {
+  spec: ReportSpec;
+  reports: ReportSessionResult[];
+}
+
+export async function renderReport(spec: ReportSpec): Promise<ReportResponse> {
+  const res = await fetch(`/api/reports/render`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) throw new Error(`Failed to render report: ${res.status}`);
+  return res.json();
+}
+
+export async function renderReportPdf(spec: ReportSpec): Promise<Blob> {
+  const res = await fetch(`/api/reports/render-pdf`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) throw new Error(`Failed to render PDF: ${res.status}`);
+  return res.blob();
+}
+
+export async function exportBulk(
+  sessionIds: string[],
+  formats: ("csv" | "json")[] = ["csv", "json"]
+): Promise<Blob> {
+  const res = await fetch(`/api/sessions/export-bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_ids: sessionIds, formats }),
+  });
+  if (!res.ok) throw new Error(`Failed to export bulk: ${res.status}`);
+  return res.blob();
+}
+
+export interface ReportTemplate {
+  id: number;
+  driver: string;
+  name: string;
+  spec: ReportSpec;
+  created_at: string;
+}
+
+export async function listReportTemplates(
+  driver?: string
+): Promise<ReportTemplate[]> {
+  const q = new URLSearchParams();
+  if (driver) q.set("driver", driver);
+  const res = await fetch(`/api/report-templates?${q.toString()}`);
+  if (!res.ok) throw new Error(`Failed to fetch templates: ${res.status}`);
+  return res.json();
+}
+
+export async function createReportTemplate(
+  name: string,
+  spec: ReportSpec,
+  driver = ""
+): Promise<{ id: number }> {
+  const res = await fetch(`/api/report-templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, spec, driver }),
+  });
+  if (!res.ok) throw new Error(`Failed to create template: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteReportTemplate(id: number): Promise<void> {
+  const res = await fetch(`/api/report-templates/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete template: ${res.status}`);
+}
+
+/** Trigger a browser download for a Blob. */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 500);
+}

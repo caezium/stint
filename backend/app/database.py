@@ -454,6 +454,22 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Report templates (Phase 23.4) — save named report-builder specs for
+    # reuse. `spec_json` is the same shape accepted by /reports/render-pdf.
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS report_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            driver TEXT DEFAULT '',
+            name TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_report_templates_driver "
+        "ON report_templates(driver, name)"
+    )
+
     # Sessions additions (Phase 22): file_hash for duplicate detection and
     # deleted_at for soft-delete with 7-day trash retention.
     cur = await db.execute("PRAGMA table_info(sessions)")
