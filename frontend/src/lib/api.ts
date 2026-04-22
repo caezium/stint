@@ -1572,6 +1572,70 @@ export async function fetchTrackOverlay(
   return res.json();
 }
 
+// ---- Session reports (Phase 14) ----
+
+export interface SplitReportLap {
+  num: number;
+  duration_ms: number;
+  is_pit_lap: boolean;
+  splits: (number | null)[];
+  best_of_session_mask: boolean[];
+}
+
+export interface SplitReportData {
+  sectors: { sector_num: number; label: string }[];
+  laps: SplitReportLap[];
+  best_rolling_lap: { num: number; duration_ms: number } | null;
+  theoretical_best_ms: number | null;
+  rolling_vs_theoretical_ms: number | null;
+}
+
+export async function fetchSplitReport(sessionId: string): Promise<SplitReportData> {
+  const res = await fetch(`/api/sessions/${sessionId}/split-report`);
+  if (!res.ok) throw new Error(`Failed to fetch split report: ${res.status}`);
+  return res.json();
+}
+
+export type ChannelStatKey =
+  | "min"
+  | "max"
+  | "avg"
+  | "p50"
+  | "p90"
+  | "p99"
+  | "std"
+  | "count";
+
+export interface ChannelsReportLap {
+  num: number;
+  duration_ms: number;
+  is_pit_lap: boolean;
+  cells: Record<string, Partial<Record<ChannelStatKey, number | null>>>;
+}
+
+export interface ChannelsReportData {
+  channels: string[];
+  stats: ChannelStatKey[];
+  laps: ChannelsReportLap[];
+  session_wide: Record<string, Partial<Record<ChannelStatKey, number | null>>>;
+}
+
+export async function fetchChannelsReport(
+  sessionId: string,
+  channels: string[],
+  stats: ChannelStatKey[] = ["min", "max", "avg", "p90"],
+  includePitLaps = false
+): Promise<ChannelsReportData> {
+  const params = new URLSearchParams({
+    channels: channels.join(","),
+    stats: stats.join(","),
+  });
+  if (includePitLaps) params.set("include_pit_laps", "1");
+  const res = await fetch(`/api/sessions/${sessionId}/channels-report?${params}`);
+  if (!res.ok) throw new Error(`Failed to fetch channels report: ${res.status}`);
+  return res.json();
+}
+
 // ---- Time-compare overlay (Phase 13.2) ----
 
 export interface LapDeltaPointsData {

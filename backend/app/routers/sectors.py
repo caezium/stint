@@ -163,3 +163,122 @@ async def get_sectors(session_id: str):
         }
     finally:
         await db.close()
+
+
+@router.get("/sessions/{session_id}/split-report")
+async def split_report(session_id: str):
+    """RaceStudio-3-parity Split Report table (Phase 14.1).
+
+    Returns a laps x sectors matrix with per-cell best-in-column flags plus
+    best-rolling-lap and theoretical-best-lap rollups. Front-end renders
+    this as a single compact grid on the session detail page.
+    """
+    import json
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT sector_num, label FROM sectors WHERE session_id = ? ORDER BY sector_num",
+            (session_id,),
+        )
+        sectors = [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            "SELECT lap_num, sector_num, duration_ms FROM sector_times WHERE session_id = ? ORDER BY lap_num, sector_num",
+            (session_id,),
+        )
+        st_rows = [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            "SELECT num, duration_ms, is_pit_lap, split_times_json FROM laps "
+            "WHERE session_id = ? ORDER BY num",
+            (session_id,),
+        )
+        lap_rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    # Build sector_num -> lap_num -> duration_ms lookup from sector_times.
+    st_by_lap: dict[int, dict[int, int]] = {}
+    for r in st_rows:
+        st_by_lap.setdefault(r["lap_num"], {})[r["sector_num"]] = r["duration_ms"]
+
+    # Fallback: if sector_times is sparse, read lap.split_times_json — that's
+    # the path the track-based sector extraction uses.
+    def sector_times_for_lap(ln: int, raw_json: str | None) -> dict[int, int]:
+        row = st_by_lap.get(ln, {})
+        if row:
+            return row
+        try:
+            arr = json.loads(raw_json) if raw_json else []
+            return {i + 1: int(v) for i, v in enumerate(arr) if v is not None}
+        except Exception:
+            return {}
+
+    # Best time per sector across racing laps (excludes pit laps).
+    sector_nums = [s["sector_num"] for s in sectors] or sorted({
+        sn for row in st_by_lap.values() for sn in row.keys()
+    })
+    best_per_sector: dict[int, int] = {}
+    for lap in lap_rows:
+        if lap.get("is_pit_lap") or lap["duration_ms"] <= 0:
+            continue
+        st = sector_times_for_lap(lap["num"], lap.get("split_times_json"))
+        for sn in sector_nums:
+            v = st.get(sn)
+            if v is None or v <= 0:
+                continue
+            cur_best = best_per_sector.get(sn)
+            if cur_best is None or v < cur_best:
+                best_per_sector[sn] = v
+
+    # Build the lap rows with per-cell best-in-column mask.
+    out_laps = []
+    for lap in lap_rows:
+        st = sector_times_for_lap(lap["num"], lap.get("split_times_json"))
+        splits: list[int | None] = []
+        mask: list[bool] = []
+        for sn in sector_nums:
+            v = st.get(sn)
+            splits.append(v if (v is not None and v > 0) else None)
+            mask.append(
+                v is not None
+                and v > 0
+                and not lap.get("is_pit_lap")
+                and best_per_sector.get(sn) == v
+            )
+        out_laps.append({
+            "num": lap["num"],
+            "duration_ms": lap["duration_ms"],
+            "is_pit_lap": bool(lap.get("is_pit_lap")),
+            "splits": splits,
+            "best_of_session_mask": mask,
+        })
+
+    # Best rolling lap: fastest non-pit racing lap we actually drove.
+    racing = [
+        l for l in lap_rows
+        if (not l.get("is_pit_lap")) and l["num"] > 0 and l["duration_ms"] > 0
+    ]
+    best_rolling = min(racing, key=lambda l: l["duration_ms"]) if racing else None
+
+    theoretical_best_ms = (
+        sum(best_per_sector.values())
+        if best_per_sector and len(best_per_sector) == len(sector_nums) and sector_nums
+        else None
+    )
+
+    return {
+        "sectors": sectors or [
+            {"sector_num": sn, "label": f"S{sn}"} for sn in sector_nums
+        ],
+        "laps": out_laps,
+        "best_rolling_lap": (
+            {"num": best_rolling["num"], "duration_ms": best_rolling["duration_ms"]}
+            if best_rolling else None
+        ),
+        "theoretical_best_ms": theoretical_best_ms,
+        "rolling_vs_theoretical_ms": (
+            best_rolling["duration_ms"] - theoretical_best_ms
+            if (best_rolling and theoretical_best_ms is not None) else None
+        ),
+    }
