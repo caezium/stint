@@ -609,6 +609,36 @@ export async function saveLayout(name: string, config: object): Promise<Layout> 
   return res.json();
 }
 
+// ---- Profile export/import (Phase 20.3) ----
+
+export interface ProfileExport {
+  version: number;
+  exported_at: string;
+  layouts: { id: number; name: string; config_json: string }[];
+  alarms: unknown[];
+  math_channels: unknown[];
+  channel_settings: unknown[];
+}
+
+export async function exportProfile(): Promise<ProfileExport> {
+  const res = await fetch(`/api/profile/export`);
+  if (!res.ok) throw new Error(`Failed to export profile: ${res.status}`);
+  return res.json();
+}
+
+export async function importProfile(
+  blob: Omit<ProfileExport, "exported_at">,
+  merge = true
+): Promise<{ imported: Record<string, number> }> {
+  const res = await fetch(`/api/profile/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...blob, merge }),
+  });
+  if (!res.ok) throw new Error(`Failed to import profile: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteLayout(id: number): Promise<void> {
   const res = await fetch(`/api/layouts/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to delete layout: ${res.status}`);
