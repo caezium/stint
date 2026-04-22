@@ -97,6 +97,98 @@ async def get_session(session_id: str):
         await db.close()
 
 
+@router.get("/sessions/{session_id}/preview")
+async def session_preview(session_id: str):
+    """Lightweight preview payload for hover popovers and share cards.
+
+    Returns the essentials needed to render a mini lap-time sparkline, a
+    downsampled GPS outline, weather, and a one-line narrative summary —
+    without shipping the full channels/laps payload of /sessions/{id}.
+    Phase 21.1.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT id, driver, vehicle, venue, log_date, log_time, "
+            "lap_count, best_lap_time_ms, total_duration_ms "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        s = await cur.fetchone()
+        if not s:
+            raise HTTPException(404, "Session not found")
+        session = dict(s)
+
+        cur = await db.execute(
+            "SELECT num, duration_ms, is_pit_lap FROM laps "
+            "WHERE session_id = ? AND num > 0 ORDER BY num",
+            (session_id,),
+        )
+        lap_rows = [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            "SELECT tag FROM session_tags WHERE session_id = ?", (session_id,)
+        )
+        tags = [r[0] for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            "SELECT weather, air_temp, track_temp FROM session_log_sheets "
+            "WHERE session_id = ?",
+            (session_id,),
+        )
+        ls = await cur.fetchone()
+        weather = None
+        if ls and (ls["weather"] or ls["air_temp"] or ls["track_temp"]):
+            parts = []
+            if ls["weather"]:
+                parts.append(ls["weather"])
+            if ls["air_temp"]:
+                parts.append(f"{ls['air_temp']:.0f}°C")
+            weather = " · ".join(parts) if parts else None
+
+        cur = await db.execute(
+            "SELECT payload_json FROM debriefs WHERE session_id = ?", (session_id,)
+        )
+        debrief_row = await cur.fetchone()
+    finally:
+        await db.close()
+
+    narrative_summary: str | None = None
+    if debrief_row:
+        try:
+            payload = json.loads(debrief_row["payload_json"])
+            n = payload.get("narrative") or {}
+            summary = n.get("summary") or ""
+            narrative_summary = summary[:180] if summary else None
+        except Exception:
+            narrative_summary = None
+
+    # Downsample GPS outline to ~200 points from the cached arrow files.
+    gps_outline: list[list[float]] = []
+    try:
+        from .channels import _find_arrow_file as _faf
+        import pyarrow.ipc as _ipc
+        lat_p = _faf(session_id, "GPS Latitude") or _faf(session_id, "GPS_Latitude")
+        lon_p = _faf(session_id, "GPS Longitude") or _faf(session_id, "GPS_Longitude")
+        if lat_p and lon_p:
+            lats = _ipc.open_file(lat_p).read_all().column(1).to_pylist()
+            lons = _ipc.open_file(lon_p).read_all().column(1).to_pylist()
+            step = max(1, len(lats) // 200)
+            gps_outline = [[lats[i], lons[i]] for i in range(0, len(lats), step)]
+    except Exception:
+        gps_outline = []
+
+    return {
+        "session": session,
+        "lap_times_ms": [l["duration_ms"] for l in lap_rows],
+        "pit_mask": [bool(l["is_pit_lap"]) for l in lap_rows],
+        "tags": tags,
+        "weather": weather,
+        "narrative_summary": narrative_summary,
+        "gps_outline": gps_outline,
+    }
+
+
 @router.get("/sessions/filters/options")
 async def get_filter_options():
     """Get distinct drivers and venues for filter dropdowns."""

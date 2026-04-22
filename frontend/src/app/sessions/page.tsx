@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { AnomalyBadge } from "@/components/anomaly-badge";
 import { SessionTagBadges, TAG_LABEL, TAG_STYLE } from "@/components/session-tag-badges";
+import { SessionHoverPreview } from "@/components/session-hover-preview";
 import { Select } from "@/components/ui/select";
 
 export default function SessionsPage() {
@@ -327,7 +328,8 @@ export default function SessionsPage() {
       {viewMode === "grid" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {sorted.map((session) => (
-            <Link key={session.id} href={`/sessions/${session.id}`}>
+            <SessionHoverPreview key={session.id} sessionId={session.id}>
+            <Link href={`/sessions/${session.id}`}>
               <Card className="hover:border-primary/30 transition-colors cursor-pointer h-full">
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-3">
@@ -375,6 +377,7 @@ export default function SessionsPage() {
                 </CardContent>
               </Card>
             </Link>
+            </SessionHoverPreview>
           ))}
         </div>
       ) : (

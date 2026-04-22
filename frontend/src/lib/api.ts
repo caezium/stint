@@ -1602,6 +1602,37 @@ export async function fetchTrackOverlay(
   return res.json();
 }
 
+// ---- Session preview (Phase 21) ----
+
+export interface SessionPreviewData {
+  session: Pick<
+    Session,
+    | "id"
+    | "driver"
+    | "vehicle"
+    | "venue"
+    | "log_date"
+    | "log_time"
+    | "lap_count"
+    | "best_lap_time_ms"
+    | "total_duration_ms"
+  >;
+  lap_times_ms: number[];
+  pit_mask: boolean[];
+  tags: string[];
+  weather: string | null;
+  narrative_summary: string | null;
+  gps_outline: number[][];
+}
+
+export async function fetchSessionPreview(
+  sessionId: string
+): Promise<SessionPreviewData> {
+  const res = await fetch(`/api/sessions/${sessionId}/preview`);
+  if (!res.ok) throw new Error(`Failed to fetch preview: ${res.status}`);
+  return res.json();
+}
+
 // ---- Channel alarms (Phase 19) ----
 
 export type AlarmScope = "global" | "driver" | "session";
