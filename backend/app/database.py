@@ -454,6 +454,41 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # Sessions additions (Phase 22): file_hash for duplicate detection and
+    # deleted_at for soft-delete with 7-day trash retention.
+    cur = await db.execute("PRAGMA table_info(sessions)")
+    scols = {row[1] for row in await cur.fetchall()}
+    if "file_hash" not in scols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN file_hash TEXT DEFAULT ''")
+    if "deleted_at" not in scols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN deleted_at TEXT")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_file_hash ON sessions(file_hash)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)"
+    )
+
+    # Manual collection membership (Phase 22.1). The existing
+    # smart_collections table stays; manual_collection_members stores the
+    # explicit membership rows for kind='manual' collections.
+    cur = await db.execute("PRAGMA table_info(smart_collections)")
+    sccols = {row[1] for row in await cur.fetchall()}
+    if "kind" not in sccols:
+        await db.execute(
+            "ALTER TABLE smart_collections ADD COLUMN kind TEXT DEFAULT 'smart'"
+        )
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS manual_collection_members (
+            collection_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            added_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (collection_id, session_id),
+            FOREIGN KEY (collection_id) REFERENCES smart_collections(id) ON DELETE CASCADE,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )"""
+    )
+
     # Channel alarms (Phase 19) — user-defined thresholds that emit anomalies
     # alongside the hard-coded detectors. Scope: 'session' binds to a specific
     # session row; 'driver' fires for every session by that driver; 'global'

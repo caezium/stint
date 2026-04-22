@@ -87,13 +87,35 @@ async def delete_collection(cid: int):
 async def get_collection_sessions(cid: int):
     db = await get_db()
     try:
-        cur = await db.execute("SELECT query_json FROM smart_collections WHERE id = ?", (cid,))
+        cur = await db.execute(
+            "SELECT query_json, kind FROM smart_collections WHERE id = ?",
+            (cid,),
+        )
         row = await cur.fetchone()
         if not row:
             raise HTTPException(404, "Collection not found")
+        kind = (row["kind"] if "kind" in row.keys() else "smart") or "smart"
+
+        # Phase 22.1: manual collections use explicit membership rows.
+        if kind == "manual":
+            cur = await db.execute(
+                """SELECT s.* FROM sessions s
+                   INNER JOIN manual_collection_members m
+                     ON m.session_id = s.id
+                   WHERE m.collection_id = ?
+                     AND (s.deleted_at IS NULL OR s.deleted_at = '')
+                   ORDER BY s.created_at DESC""",
+                (cid,),
+            )
+            return [dict(r) async for r in cur]
+
         q = json.loads(row["query_json"] or "{}")
 
-        sql = "SELECT * FROM sessions WHERE 1=1"
+        # Exclude soft-deleted sessions from smart collection results too.
+        sql = (
+            "SELECT * FROM sessions "
+            "WHERE (deleted_at IS NULL OR deleted_at = '')"
+        )
         params: list = []
         if q.get("driver_id") is not None:
             sql += " AND driver_id = ?"
@@ -117,5 +139,61 @@ async def get_collection_sessions(cid: int):
 
         cur = await db.execute(sql, params)
         return [dict(r) async for r in cur]
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Manual Collections (Phase 22.1)
+# ---------------------------------------------------------------------------
+
+
+class ManualCollectionRequest(BaseModel):
+    name: str
+
+
+@router.post("/manual-collections")
+async def create_manual_collection(req: ManualCollectionRequest):
+    """Create a new manual collection (name only; membership is added
+    via add-session below)."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "INSERT INTO smart_collections (name, query_json, kind) "
+            "VALUES (?, '{}', 'manual')",
+            (req.name,),
+        )
+        await db.commit()
+        return {"id": int(cur.lastrowid), "name": req.name}
+    finally:
+        await db.close()
+
+
+@router.post("/manual-collections/{cid}/sessions/{session_id}")
+async def add_session_to_collection(cid: int, session_id: str):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO manual_collection_members "
+            "(collection_id, session_id) VALUES (?, ?)",
+            (cid, session_id),
+        )
+        await db.commit()
+        return {"collection_id": cid, "session_id": session_id}
+    finally:
+        await db.close()
+
+
+@router.delete("/manual-collections/{cid}/sessions/{session_id}")
+async def remove_session_from_collection(cid: int, session_id: str):
+    db = await get_db()
+    try:
+        await db.execute(
+            "DELETE FROM manual_collection_members "
+            "WHERE collection_id = ? AND session_id = ?",
+            (cid, session_id),
+        )
+        await db.commit()
+        return {"ok": True}
     finally:
         await db.close()

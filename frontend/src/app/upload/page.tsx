@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { uploadFile, fetchTrack, matchTrack, assignSession, type UploadResult } from "@/lib/api";
+import { uploadFile, fetchTrack, matchTrack, assignSession, DuplicateUploadError, type UploadResult } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -12,9 +12,11 @@ const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
 type QueueItem = {
   id: string;
   file: File;
-  status: "pending" | "uploading" | "matching" | "ok" | "error";
+  status: "pending" | "uploading" | "matching" | "ok" | "duplicate" | "error";
   error?: string;
   result?: UploadResult;
+  /** When status === 'duplicate', the session_id of the existing upload. */
+  duplicateOfSessionId?: string;
 };
 
 function genId(): string {
@@ -62,6 +64,14 @@ export default function UploadPage() {
 
       update({ status: "ok" });
     } catch (err) {
+      if (err instanceof DuplicateUploadError) {
+        update({
+          status: "duplicate",
+          duplicateOfSessionId: err.sessionId,
+          error: "Already uploaded",
+        });
+        return;
+      }
       update({
         status: "error",
         error: err instanceof Error ? err.message : "Upload failed",
@@ -234,6 +244,14 @@ export default function UploadPage() {
                         Open →
                       </Link>
                     )}
+                    {item.status === "duplicate" && item.duplicateOfSessionId && (
+                      <Link
+                        href={`/sessions/${item.duplicateOfSessionId}`}
+                        className="text-xs text-amber-400 hover:underline"
+                      >
+                        Open existing →
+                      </Link>
+                    )}
                     {item.status === "error" && (
                       <button
                         className="text-xs text-muted-foreground hover:text-foreground underline"
@@ -296,9 +314,11 @@ function StatusDot({ status }: { status: QueueItem["status"] }) {
       ? "bg-green-500"
       : status === "error"
         ? "bg-red-500"
-        : status === "uploading" || status === "matching"
-          ? "bg-amber-500 animate-pulse"
-          : "bg-muted-foreground/50";
+        : status === "duplicate"
+          ? "bg-amber-400"
+          : status === "uploading" || status === "matching"
+            ? "bg-amber-500 animate-pulse"
+            : "bg-muted-foreground/50";
   return <span className={`w-2 h-2 rounded-full ${color} shrink-0`} />;
 }
 
@@ -312,6 +332,8 @@ function statusLabel(i: QueueItem): string {
       return "Matching track…";
     case "ok":
       return `Done · ${i.result?.lap_count ?? "?"} laps · ${i.result?.venue ?? "—"}`;
+    case "duplicate":
+      return "Already uploaded";
     case "error":
       return `Error: ${i.error ?? "unknown"}`;
   }

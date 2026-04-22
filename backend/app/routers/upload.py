@@ -53,8 +53,8 @@ async def persist_session(db, result: dict) -> None:
            (id, file_name, driver, vehicle, venue, log_date, log_time,
             session_name, series, logger_model, logger_id,
             lap_count, best_lap_time_ms, total_duration_ms,
-            driver_id, vehicle_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            driver_id, vehicle_id, file_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              file_name = excluded.file_name,
              driver = excluded.driver,
@@ -70,7 +70,8 @@ async def persist_session(db, result: dict) -> None:
              best_lap_time_ms = excluded.best_lap_time_ms,
              total_duration_ms = excluded.total_duration_ms,
              driver_id = excluded.driver_id,
-             vehicle_id = excluded.vehicle_id""",
+             vehicle_id = excluded.vehicle_id,
+             file_hash = COALESCE(NULLIF(excluded.file_hash, ''), sessions.file_hash)""",
         (result["session_id"], result.get("file_name", ""),
          result.get("driver", ""), result.get("vehicle", ""),
          result.get("venue", ""), result.get("log_date", ""),
@@ -78,7 +79,7 @@ async def persist_session(db, result: dict) -> None:
          result.get("series", ""), result.get("logger_model", ""),
          result.get("logger_id", 0), result.get("lap_count", 0),
          result.get("best_lap_time_ms", 0), result.get("total_duration_ms", 0),
-         driver_id, vehicle_id)
+         driver_id, vehicle_id, result.get("file_hash", ""))
     )
 
     # Refresh child rows so cache/schema updates do not leave stale records behind.
@@ -136,10 +137,44 @@ async def upload_file(file: UploadFile):
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(413, "File too large. Maximum upload size is 100 MB.")
 
+    # Phase 22.3: duplicate detection via SHA-256. If a session with this
+    # hash already exists (and hasn't been soft-deleted), short-circuit the
+    # whole pipeline and point the frontend at the existing row.
+    import hashlib
+    file_hash = hashlib.sha256(content).hexdigest()
+    try:
+        db_dup = await get_db()
+        try:
+            cur = await db_dup.execute(
+                "SELECT id FROM sessions "
+                "WHERE file_hash = ? AND (deleted_at IS NULL OR deleted_at = '') "
+                "LIMIT 1",
+                (file_hash,),
+            )
+            existing = await cur.fetchone()
+        finally:
+            await db_dup.close()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "duplicate_upload",
+                    "session_id": existing["id"],
+                    "message": "This XRK has already been uploaded.",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # If the hash check itself fails, fall through to normal parse so
+        # the user isn't blocked by a migration glitch.
+        pass
+
     try:
         result = parse_and_cache(content, file.filename)
     except Exception as e:
         raise HTTPException(500, f"Failed to parse file: {str(e)}")
+    result["file_hash"] = file_hash
 
     # Apply session naming template if configured
     try:
