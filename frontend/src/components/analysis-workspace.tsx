@@ -514,6 +514,41 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     []
   );
 
+  // Phase 17.2: G-G diagram preset — quick-add a scatter panel configured
+  // with lateral vs longitudinal acceleration channels (falls back to any
+  // channels present in the session that look like accel).
+  const handleAddGGDiagram = useCallback(() => {
+    const id = `chart-${Date.now()}`;
+    const names = session?.channels.map((c) => c.name) ?? [];
+    const pick = (prefs: RegExp[]): string | undefined => {
+      for (const re of prefs) {
+        const hit = names.find((n) => re.test(n));
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    const x = pick([
+      /^lat(eral)?[\s_]?accel/i,
+      /^acc[\s_]?y/i,
+      /lat.*g/i,
+    ]);
+    const y = pick([
+      /^long(itudinal)?[\s_]?accel/i,
+      /^acc[\s_]?x/i,
+      /long.*g/i,
+    ]);
+    setCharts((prev) => [
+      ...prev,
+      {
+        id,
+        type: "scatter",
+        channels: [x ?? "Lateral Accel", y ?? "Longitudinal Accel"],
+        options: { preset: "gg-diagram" },
+      },
+    ]);
+    setAddChartOpen(false);
+  }, [session]);
+
   // ---- Remove chart ----
   const handleRemoveChart = useCallback((chartId: string) => {
     setCharts((prev) => prev.filter((c) => c.id !== chartId));
@@ -866,7 +901,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                 className="fixed inset-0 z-40"
                 onClick={() => setAddChartOpen(false)}
               />
-              <div className="absolute top-full right-0 mt-1 z-50 bg-card border border-border rounded-md shadow-lg py-1 min-w-[140px]">
+              <div className="absolute top-full right-0 mt-1 z-50 bg-card border border-border rounded-md shadow-lg py-1 min-w-[160px]">
                 {(Object.keys(CHART_TYPE_LABELS) as ChartType[]).map((type) => (
                   <button
                     key={type}
@@ -876,6 +911,17 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                     {CHART_TYPE_LABELS[type]}
                   </button>
                 ))}
+                <div className="border-t border-border/50 my-1" />
+                <div className="px-3 py-1 text-[9px] uppercase tracking-wide text-muted-foreground/70">
+                  Presets
+                </div>
+                <button
+                  onClick={handleAddGGDiagram}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+                  title="Lateral vs Longitudinal acceleration (traction circle)"
+                >
+                  G-G Diagram
+                </button>
               </div>
             </>
           )}
