@@ -729,6 +729,15 @@ export interface SfLine {
   lon2: number;
 }
 
+/** Split line — same geometry as SfLine, plus optional label/type metadata
+ * (Phase 24.1). Older splits may not carry these fields. */
+export interface Split extends SfLine {
+  label?: string;
+  type?: string;
+}
+
+export type SplitType = "corner1" | "corner2" | "straight" | "chicane" | "";
+
 export interface Track {
   id: number;
   name: string;
@@ -742,7 +751,7 @@ export interface Track {
   surface?: string;
   timezone?: string;
   sf_line?: SfLine | null;
-  split_lines?: SfLine[];
+  split_lines?: Split[];
   pit_lane?: number[][];
 }
 
@@ -852,13 +861,28 @@ export async function setTrackPitLane(
   if (!res.ok) throw new Error(`Failed to set pit lane: ${res.status}`);
 }
 
-export async function setTrackSplits(id: number, splits: SfLine[]): Promise<void> {
+export async function setTrackSplits(
+  id: number,
+  splits: Split[]
+): Promise<void> {
   const res = await fetch(`/api/tracks/${id}/splits`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ splits }),
   });
   if (!res.ok) throw new Error(`Failed to set splits: ${res.status}`);
+}
+
+export async function copySplitsFromTrack(
+  targetId: number,
+  sourceId: number
+): Promise<{ ok: boolean; split_count: number; recomputed_sessions: number }> {
+  const res = await fetch(
+    `/api/tracks/${targetId}/copy-splits-from/${sourceId}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to copy splits: ${res.status}`);
+  return res.json();
 }
 
 export async function clearTrackSfLine(id: number): Promise<void> {
@@ -1879,7 +1903,7 @@ export interface SplitReportLap {
 }
 
 export interface SplitReportData {
-  sectors: { sector_num: number; label: string }[];
+  sectors: { sector_num: number; label: string; type?: string }[];
   laps: SplitReportLap[];
   best_rolling_lap: { num: number; duration_ms: number } | null;
   theoretical_best_ms: number | null;

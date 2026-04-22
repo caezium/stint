@@ -16,6 +16,21 @@ function fmt(ms: number | null): string {
   return s >= 60 ? formatLapTime(ms) : `${s.toFixed(3)}s`;
 }
 
+function splitTypeColor(type: string): string {
+  switch (type) {
+    case "corner1":
+      return "bg-amber-400";
+    case "corner2":
+      return "bg-orange-400";
+    case "straight":
+      return "bg-sky-400";
+    case "chicane":
+      return "bg-pink-400";
+    default:
+      return "bg-muted-foreground/50";
+  }
+}
+
 /**
  * RaceStudio-3-parity Split Report table. Renders all racing laps × all
  * sectors with best-in-column highlighting and rolling/theoretical rollups.
@@ -114,8 +129,17 @@ export function SplitReportPanel({ sessionId }: Props) {
                   <th
                     key={s.sector_num}
                     className="text-right px-3 py-1.5 font-medium text-muted-foreground"
+                    title={s.type || undefined}
                   >
-                    {s.label || `S${s.sector_num}`}
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      {s.type && (
+                        <span
+                          className={`inline-block w-1.5 h-1.5 rounded-full ${splitTypeColor(s.type)}`}
+                          aria-hidden
+                        />
+                      )}
+                      {s.label || `S${s.sector_num}`}
+                    </span>
                   </th>
                 ))}
                 <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Lap time</th>
