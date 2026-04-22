@@ -262,6 +262,15 @@ async def upload_file(file: UploadFile):
     except Exception as e:
         print(f"[weather] enqueue failed for {result['session_id']}: {e}")
 
+    # Phase 26.1 — corner detection. Runs synchronously because it's cheap
+    # (pure NumPy on already-cached GPS data) and we want the overlay
+    # available immediately when the session page loads.
+    try:
+        from ..corners import detect_corners
+        await detect_corners(result["session_id"])
+    except Exception as e:
+        print(f"[corners] detection failed for {result['session_id']}: {e}")
+
     # Build proactive nudge (T3.3). Non-fatal.
     try:
         from .chat_assist import maybe_create_nudge
