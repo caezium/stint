@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { fetchLayouts, saveLayout, deleteLayout, type Layout } from "@/lib/api";
+import {
+  fetchLayouts,
+  saveLayout,
+  deleteLayout,
+  exportProfile,
+  importProfile,
+  type Layout,
+} from "@/lib/api";
 
 interface LayoutManagerProps {
   /** Current chart config to save */
@@ -114,6 +121,60 @@ export function LayoutManager({ currentConfig, onLoad }: LayoutManagerProps) {
               >
                 Save
               </button>
+            </div>
+
+            {/* Phase 20.3: profile export / import */}
+            <div className="border-t border-border pt-2 flex gap-1">
+              <button
+                onClick={async () => {
+                  try {
+                    const profile = await exportProfile();
+                    const blob = new Blob(
+                      [JSON.stringify(profile, null, 2)],
+                      { type: "application/json" },
+                    );
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    const ts = new Date().toISOString().slice(0, 10);
+                    a.download = `stint-profile-${ts}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                className="flex-1 px-2 py-1 bg-muted hover:bg-muted/70 rounded text-xs"
+                title="Download all layouts + alarms + math channels as a JSON profile"
+              >
+                Export profile
+              </button>
+              <label
+                className="flex-1 px-2 py-1 bg-muted hover:bg-muted/70 rounded text-xs text-center cursor-pointer"
+                title="Import a previously exported profile"
+              >
+                Import
+                <input
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const text = await file.text();
+                      const parsed = JSON.parse(text);
+                      await importProfile(parsed, true);
+                      const updated = await fetchLayouts();
+                      setLayouts(updated);
+                    } catch {
+                      /* ignore */
+                    } finally {
+                      e.target.value = "";
+                    }
+                  }}
+                />
+              </label>
             </div>
           </div>
         </>
