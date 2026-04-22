@@ -9,7 +9,7 @@ from .routers import (
     upload, sessions, channels, sectors, math_channels, layouts, profiles,
     export, compare, tracks, math_defaults, log_sheets, collections, reports, settings,
     admin, anomalies, debrief, chat, chat_assist, drivers,
-    annotations, proposals, jobs, share, reference_laps, alarms,
+    annotations, proposals, jobs, share, reference_laps, alarms, report_builder,
 )
 
 
@@ -60,6 +60,7 @@ app.include_router(jobs.router, prefix="/api")
 app.include_router(share.router, prefix="/api")
 app.include_router(reference_laps.router, prefix="/api")
 app.include_router(alarms.router, prefix="/api")
+app.include_router(report_builder.router, prefix="/api")
 
 
 @app.get("/api/health")
