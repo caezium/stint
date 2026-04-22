@@ -16,6 +16,78 @@ from ..xrk_service import CACHE_DIR, get_resampled_lap_data
 
 router = APIRouter()
 
+# ----- Filter / timing helpers (Phase 18.1 + 18.2) --------------------------
+# These extend the safe formula namespace with RaceStudio-3-style helpers.
+
+
+def _roll_avg(arr: np.ndarray, window: int) -> np.ndarray:
+    """Simple rolling mean, same-length output (edges padded with input value)."""
+    w = int(max(1, window))
+    if w == 1 or arr.size < 2:
+        return np.asarray(arr, dtype=np.float64)
+    x = np.asarray(arr, dtype=np.float64)
+    # Reflect-pad to keep output length == input length.
+    pad = w // 2
+    padded = np.pad(x, (pad, w - pad - 1), mode="edge")
+    kernel = np.ones(w) / w
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _ema(arr: np.ndarray, alpha: float) -> np.ndarray:
+    """First-order exponential moving average with smoothing factor alpha."""
+    a = float(max(1e-6, min(1.0, alpha)))
+    x = np.asarray(arr, dtype=np.float64)
+    if x.size == 0:
+        return x
+    out = np.empty_like(x)
+    out[0] = x[0]
+    for i in range(1, x.size):
+        out[i] = a * x[i] + (1 - a) * out[i - 1]
+    return out
+
+
+def _fir(arr: np.ndarray, coeffs) -> np.ndarray:
+    """FIR filter via convolution with a user-provided coefficient vector."""
+    x = np.asarray(arr, dtype=np.float64)
+    c = np.asarray(coeffs, dtype=np.float64)
+    if x.size == 0 or c.size == 0:
+        return x
+    c = c / c.sum() if c.sum() != 0 else c
+    pad = c.size // 2
+    padded = np.pad(x, (pad, c.size - pad - 1), mode="edge")
+    return np.convolve(padded, c, mode="valid")
+
+
+def _median_filt(arr: np.ndarray, window: int) -> np.ndarray:
+    """Rolling median (pure NumPy, no SciPy dependency)."""
+    w = int(max(1, window))
+    if w == 1:
+        return np.asarray(arr, dtype=np.float64)
+    x = np.asarray(arr, dtype=np.float64)
+    if x.size < w:
+        return x
+    pad = w // 2
+    padded = np.pad(x, (pad, w - pad - 1), mode="edge")
+    out = np.empty_like(x)
+    for i in range(x.size):
+        out[i] = np.median(padded[i : i + w])
+    return out
+
+
+def _time_shift(arr: np.ndarray, offset_ms: int) -> np.ndarray:
+    """Phase-shift a channel by whole samples. Positive → delayed (lookback
+    becomes available one sample earlier); negative → advance. This is
+    approximate — it assumes uniform sample spacing from the resampled
+    table, which is the convention in the rest of the math evaluator."""
+    x = np.asarray(arr, dtype=np.float64)
+    # Use a simple sample-shift heuristic: ms / 10 (sample rate ~100Hz). If
+    # the true dt is available via `ts` we recommend `np.roll` directly.
+    n = int(round(offset_ms / 10.0))
+    if n == 0 or x.size == 0:
+        return x
+    return np.roll(x, n)
+
+
 # Safe math functions allowed in formulas
 SAFE_FUNCTIONS = {
     "sqrt": np.sqrt,
@@ -42,6 +114,19 @@ SAFE_FUNCTIONS = {
     "diff": np.diff,
     "pi": math.pi,
     "e": math.e,
+    # Phase 18: filter functions
+    "ROLL_AVG": _roll_avg,
+    "EMA": _ema,
+    "FIR": _fir,
+    "MEDIAN_FILT": _median_filt,
+    # Phase 18: timing functions
+    "TIME_SHIFT": _time_shift,
+    # Lowercase aliases for convenience
+    "roll_avg": _roll_avg,
+    "ema": _ema,
+    "fir": _fir,
+    "median_filt": _median_filt,
+    "time_shift": _time_shift,
 }
 SAFE_FUNCTION_NAMES = set(SAFE_FUNCTIONS.keys())
 
@@ -300,3 +385,30 @@ async def delete_math_channel(session_id: str, name: str):
         os.remove(arrow_path)
 
     return {"deleted": name}
+
+
+@router.post("/sessions/{session_id}/math-channels/{name}/recompute")
+async def recompute_math_channel(session_id: str, name: str):
+    """Re-evaluate an existing math channel's formula against the current
+    session data. Useful after a filter-function tweak or when upstream
+    data changed. Phase 18.6.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT formula, units FROM math_channels "
+            "WHERE session_id = ? AND name = ?",
+            (session_id, name),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, f"math channel '{name}' not found")
+        formula = row["formula"]
+        units = row["units"]
+    finally:
+        await db.close()
+
+    # Reuse the create path's body by calling it with the same formula.
+    # This re-evaluates and rewrites the cached arrow file.
+    req = MathChannelRequest(name=name, formula=formula, units=units)
+    return await create_math_channel(session_id, req)
