@@ -21,7 +21,11 @@ async def list_sessions(
 ):
     db = await get_db()
     try:
-        query = "SELECT * FROM sessions WHERE 1=1"
+        # Exclude soft-deleted sessions by default (Phase 22.4).
+        query = (
+            "SELECT * FROM sessions "
+            "WHERE (deleted_at IS NULL OR deleted_at = '')"
+        )
         params = []
 
         if driver:
@@ -57,6 +61,42 @@ async def list_sessions(
                 s["tags"] = tags_map.get(s["id"], [])
 
         return sessions
+    finally:
+        await db.close()
+
+
+@router.get("/sessions/trash")
+async def list_trash():
+    """Sessions that are soft-deleted but still within recovery window.
+
+    NOTE: must be declared BEFORE /sessions/{session_id} so FastAPI's
+    route matcher doesn't treat "trash" as a session id.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT id, driver, vehicle, venue, log_date, lap_count, "
+            "deleted_at FROM sessions "
+            "WHERE deleted_at IS NOT NULL AND deleted_at != '' "
+            "ORDER BY deleted_at DESC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+@router.post("/sessions/{session_id}/restore")
+async def restore_session(session_id: str):
+    """Undo a soft delete (Phase 22.4)."""
+    db = await get_db()
+    try:
+        res = await db.execute(
+            "UPDATE sessions SET deleted_at = NULL WHERE id = ?", (session_id,)
+        )
+        await db.commit()
+        if res.rowcount == 0:
+            raise HTTPException(404, "Session not found")
+        return {"restored": session_id}
     finally:
         await db.close()
 
@@ -294,23 +334,34 @@ async def get_collections():
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, hard: bool = False):
+    """Soft-delete by default (Phase 22.4): sets `deleted_at` so the row
+    drops out of /sessions but can be restored from /sessions/trash within
+    7 days. Pass `?hard=1` to bypass the trash (legacy behaviour)."""
     db = await get_db()
     try:
         cursor = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
         if not await cursor.fetchone():
             raise HTTPException(404, "Session not found")
 
-        await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        if hard:
+            await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            await db.commit()
+            # Clean up cache files on hard delete only.
+            import shutil, os
+            from ..xrk_service import CACHE_DIR
+            cache_dir = os.path.join(CACHE_DIR, session_id)
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+            return {"deleted": session_id, "hard": True}
+
+        await db.execute(
+            "UPDATE sessions SET deleted_at = datetime('now') WHERE id = ?",
+            (session_id,),
+        )
         await db.commit()
-
-        # Clean up cache files
-        import shutil, os
-        from ..xrk_service import CACHE_DIR
-        cache_dir = os.path.join(CACHE_DIR, session_id)
-        if os.path.exists(cache_dir):
-            shutil.rmtree(cache_dir)
-
-        return {"deleted": session_id}
+        return {"deleted": session_id, "hard": False}
     finally:
         await db.close()
+
+

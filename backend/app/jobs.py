@@ -114,6 +114,32 @@ async def _run_one(job: dict) -> None:
             await compute_session_tags(sid)
             await evaluate_prior_plan(sid)
             await generate_plan(sid)
+        elif kind == "purge_trash":
+            # Phase 22.4: hard-delete soft-deleted sessions older than 7 days
+            from .database import get_db
+            import os
+            import shutil
+            from .xrk_service import CACHE_DIR
+            db = await get_db()
+            try:
+                cur = await db.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE deleted_at IS NOT NULL AND deleted_at != '' "
+                    "AND datetime(deleted_at) < datetime('now', '-7 days')"
+                )
+                stale = [r[0] for r in await cur.fetchall()]
+                for sid_ in stale:
+                    await db.execute("DELETE FROM sessions WHERE id = ?", (sid_,))
+                    cache_dir = os.path.join(CACHE_DIR, sid_)
+                    if os.path.exists(cache_dir):
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                await db.commit()
+            finally:
+                await db.close()
+        elif kind == "fetch_weather":
+            # Phase 25: auto-fetch weather for the session log sheet
+            from .routers.log_sheets import _fetch_and_persist_weather
+            await _fetch_and_persist_weather(sid)
         else:
             raise ValueError(f"unknown job kind: {kind}")
         await _finish(jid, True, None)

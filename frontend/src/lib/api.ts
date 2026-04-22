@@ -241,6 +241,14 @@ export async function fetchTrack(
   return res.json();
 }
 
+/** Thrown when the backend detects a duplicate upload via file hash. */
+export class DuplicateUploadError extends Error {
+  constructor(public sessionId: string, message: string) {
+    super(message);
+    this.name = "DuplicateUploadError";
+  }
+}
+
 export async function uploadFile(file: File): Promise<UploadResult> {
   const formData = new FormData();
   formData.append("file", file);
@@ -248,6 +256,22 @@ export async function uploadFile(file: File): Promise<UploadResult> {
     method: "POST",
     body: formData,
   });
+  if (res.status === 409) {
+    // Phase 22.3: duplicate detected; surface the existing session id.
+    try {
+      const body = (await res.json()) as { detail?: { session_id?: string; message?: string } };
+      const detail = body.detail;
+      if (detail?.session_id) {
+        throw new DuplicateUploadError(
+          detail.session_id,
+          detail.message || "Already uploaded",
+        );
+      }
+    } catch (e) {
+      if (e instanceof DuplicateUploadError) throw e;
+    }
+    throw new Error("Already uploaded");
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "Upload failed");
     throw new Error(text);
@@ -1600,6 +1624,70 @@ export async function fetchTrackOverlay(
   );
   if (!res.ok) throw new Error(`Failed to fetch track overlay: ${res.status}`);
   return res.json();
+}
+
+// ---- Trash / soft-delete (Phase 22) ----
+
+export interface TrashedSession {
+  id: string;
+  driver: string;
+  vehicle: string;
+  venue: string;
+  log_date: string;
+  lap_count: number;
+  deleted_at: string;
+}
+
+export async function fetchTrash(): Promise<TrashedSession[]> {
+  const res = await fetch(`/api/sessions/trash`);
+  if (!res.ok) throw new Error(`Failed to fetch trash: ${res.status}`);
+  return res.json();
+}
+
+export async function restoreSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${id}/restore`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to restore: ${res.status}`);
+}
+
+export async function hardDeleteSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${id}?hard=1`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete permanently: ${res.status}`);
+}
+
+// ---- Manual collections (Phase 22.1) ----
+
+export async function createManualCollection(
+  name: string
+): Promise<{ id: number; name: string }> {
+  const res = await fetch(`/api/manual-collections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Failed to create collection: ${res.status}`);
+  return res.json();
+}
+
+export async function addSessionToCollection(
+  collectionId: number,
+  sessionId: string
+): Promise<void> {
+  const res = await fetch(
+    `/api/manual-collections/${collectionId}/sessions/${sessionId}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to add to collection: ${res.status}`);
+}
+
+export async function removeSessionFromCollection(
+  collectionId: number,
+  sessionId: string
+): Promise<void> {
+  const res = await fetch(
+    `/api/manual-collections/${collectionId}/sessions/${sessionId}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(`Failed to remove: ${res.status}`);
 }
 
 // ---- Session preview (Phase 21) ----
