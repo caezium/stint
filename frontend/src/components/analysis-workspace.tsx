@@ -5,7 +5,8 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSessionStore } from "@/stores/session-store";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchMathDefaults, type TrackData, type TrackOverlayData, type Track } from "@/lib/api";
+import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchLapDeltaPoints, fetchMathDefaults, type TrackData, type TrackOverlayData, type Track } from "@/lib/api";
+import { PlaybackControls } from "@/components/playback-controls";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
 import { HistogramChart } from "@/components/charts/histogram-chart";
@@ -302,10 +303,50 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
       setTrackOverlay(null);
       return;
     }
+    // Phase 13.2: delta-t overlay — paint the driven line by where this lap
+    // gained/lost time vs the session's best lap (reference-lap-picker will
+    // make this configurable in Phase 15).
+    if (trackColorChannel === "__delta__") {
+      if (!session || !refLap) {
+        setTrackOverlay(null);
+        return;
+      }
+      // Reference = best (fastest) racing lap of the current session.
+      const racing = session.laps.filter(
+        (l) => l.num > 0 && l.duration_ms > 0 && !l.is_pit_lap
+      );
+      if (racing.length < 2) {
+        setTrackOverlay(null);
+        return;
+      }
+      const best = racing.reduce((a, b) =>
+        b.duration_ms < a.duration_ms ? b : a
+      );
+      if (best.num === refLap.num) {
+        // Comparing a lap against itself yields all zeros; not useful.
+        setTrackOverlay(null);
+        return;
+      }
+      fetchLapDeltaPoints(sessionId, refLap.num, {
+        session_id: sessionId,
+        lap: best.num,
+      })
+        .then((d) => {
+          setTrackOverlay({
+            lat: d.lat,
+            lon: d.lon,
+            values: d.delta_s,
+            channel: `Δ vs L${best.num}`,
+            point_count: d.lat.length,
+          });
+        })
+        .catch(() => setTrackOverlay(null));
+      return;
+    }
     fetchTrackOverlay(sessionId, trackColorChannel, refLap?.num)
       .then(setTrackOverlay)
       .catch(() => setTrackOverlay(null));
-  }, [sessionId, trackColorChannel, refLap]);
+  }, [sessionId, trackColorChannel, refLap, session]);
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
@@ -643,6 +684,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
             className="bg-muted border-none rounded px-1.5 py-0.5 text-xs text-foreground"
           >
             <option value="speed">Speed</option>
+            <option value="__delta__">Δ vs best lap</option>
             {session.channels
               .filter((c) => c.category !== "Position" && c.sample_count > 10)
               .slice(0, 20)
@@ -808,18 +850,28 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                 <Separator className="h-1.5 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />
                 {/* Mini track map */}
                 <Panel id="trackmap" defaultSize="25%" minSize="10%">
-                  <div className="h-full p-2">
+                  <div className="h-full p-2 flex flex-col gap-1">
                     {convertedMapTraces.length > 0 ? (
-                      <TrackMap
-                        laps={convertedMapTraces}
-                        valueLabel={valueLabel}
-                        valueUnits={valueUnits}
-                        sfLine={sfLineForMap}
-                        splitLines={splitsForMap}
-                        interactive
-                        gpsOffset={gpsOffset}
-                        onGpsOffsetChange={setGpsOffset}
-                      />
+                      <>
+                        <div className="flex-1 min-h-0">
+                          <TrackMap
+                            laps={convertedMapTraces}
+                            valueLabel={valueLabel}
+                            valueUnits={valueUnits}
+                            sfLine={sfLineForMap}
+                            splitLines={splitsForMap}
+                            interactive
+                            gpsOffset={gpsOffset}
+                            onGpsOffsetChange={setGpsOffset}
+                          />
+                        </div>
+                        {refLap?.duration_ms != null && refLap.duration_ms > 0 && (
+                          <PlaybackControls
+                            durationMs={refLap.duration_ms}
+                            compact
+                          />
+                        )}
+                      </>
                     ) : (
                       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
                         No track data
