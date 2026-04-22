@@ -90,7 +90,18 @@ function defaultCharts(): ChartConfig[] {
 export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   const session = useSessionStore((s) => s.session);
   const { refLap, altLap, extraLaps, crossSessionLaps } = useLapStore();
-  const { xAxisMode, setXAxisMode, zoomRange, setZoomRange } = useCursorStore();
+  const {
+    xAxisMode,
+    setXAxisMode,
+    zoomRange,
+    setZoomRange,
+    snapMode,
+    setSnapMode,
+    localTimeMode,
+    setLocalTimeMode,
+    cursorSize,
+    setCursorSize,
+  } = useCursorStore();
   const [track, setTrack] = useState<TrackData | null>(null);
   const [boundTrack, setBoundTrack] = useState<Track | null>(null);
   // Keyed by `${sessionId}:${lapNum}` to support cross-session laps
@@ -697,6 +708,48 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
             Reset Zoom
           </button>
         )}
+
+        {/* Phase 16.1: snap to lap on zoom out */}
+        <label
+          className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer"
+          title="Snap zoom-out to lap boundaries"
+        >
+          <input
+            type="checkbox"
+            checked={snapMode}
+            onChange={(e) => setSnapMode(e.target.checked)}
+            className="h-3 w-3 accent-primary"
+          />
+          Snap
+        </label>
+
+        {/* Phase 16.2: local-time cursor sync across overlay laps */}
+        <label
+          className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer"
+          title="Cursor syncs across laps by lap-relative time"
+        >
+          <input
+            type="checkbox"
+            checked={localTimeMode}
+            onChange={(e) => setLocalTimeMode(e.target.checked)}
+            className="h-3 w-3 accent-primary"
+          />
+          Local time
+        </label>
+
+        {/* Phase 16.4: cursor size */}
+        <select
+          value={cursorSize}
+          onChange={(e) =>
+            setCursorSize(e.target.value as "none" | "small" | "large")
+          }
+          className="bg-muted rounded px-1 py-0.5 text-[10px] cursor-pointer"
+          title="Cursor size"
+        >
+          <option value="none">No cursor</option>
+          <option value="small">Small ⊙</option>
+          <option value="large">Large ⊙</option>
+        </select>
 
         {/* Track color channel selector */}
         <div className="flex items-center gap-1 ml-auto">

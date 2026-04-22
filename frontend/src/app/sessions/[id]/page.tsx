@@ -28,6 +28,7 @@ import { AnnotationsPanel } from "@/components/annotations-panel";
 import { ProposalsPanel } from "@/components/proposals-panel";
 import { SplitReportPanel } from "@/components/split-report-panel";
 import { ChannelsReportPanel } from "@/components/channels-report-panel";
+import { ChannelTagsOverlay } from "@/components/channel-tags-overlay";
 import {
   DebriefHeadline,
   DrivingFingerprintCard,
@@ -181,6 +182,17 @@ export default function SessionDetailPage() {
         onOpenChat={() => setChatOpen(true)}
       />
       <ChatPanel sessionId={id} />
+      <ChannelTagsOverlay
+        sessionId={id}
+        lapNum={
+          session.laps.find(
+            (l) => l.num > 0 && l.duration_ms > 0 && !l.is_pit_lap,
+          )?.num ?? null
+        }
+        channels={["GPS Speed", "RPM", "Throttle", "Brake"].filter((c) =>
+          session.channels.some((sc) => sc.name === c),
+        )}
+      />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <Link
