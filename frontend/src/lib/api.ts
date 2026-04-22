@@ -1572,6 +1572,75 @@ export async function fetchTrackOverlay(
   return res.json();
 }
 
+// ---- Reference laps (Phase 15) ----
+
+export type ReferenceLapKind = "user" | "pb" | "track-record";
+
+export interface ReferenceLap {
+  id: number;
+  session_id: string | null;
+  lap_num: number;
+  driver: string;
+  venue: string;
+  name: string;
+  kind: ReferenceLapKind;
+  is_default: number;
+  created_at: string;
+  /** Populated by /sessions/{id}/default-reference when known */
+  duration_ms?: number | null;
+}
+
+export async function fetchReferenceLaps(
+  driver?: string,
+  venue?: string
+): Promise<ReferenceLap[]> {
+  const q = new URLSearchParams();
+  if (driver) q.set("driver", driver);
+  if (venue) q.set("venue", venue);
+  const res = await fetch(`/api/reference-laps?${q.toString()}`);
+  if (!res.ok) throw new Error(`Failed to fetch reference laps: ${res.status}`);
+  return res.json();
+}
+
+export async function createReferenceLap(
+  sessionId: string,
+  lapNum: number,
+  opts?: { name?: string; setDefault?: boolean }
+): Promise<{ id: number }> {
+  const res = await fetch(`/api/reference-laps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      lap_num: lapNum,
+      name: opts?.name,
+      set_default: opts?.setDefault ?? true,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to create reference lap: ${res.status}`);
+  return res.json();
+}
+
+export async function setDefaultReferenceLap(id: number): Promise<void> {
+  const res = await fetch(`/api/reference-laps/${id}/set-default`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to set default: ${res.status}`);
+}
+
+export async function deleteReferenceLap(id: number): Promise<void> {
+  const res = await fetch(`/api/reference-laps/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete reference lap: ${res.status}`);
+}
+
+export async function fetchDefaultReference(
+  sessionId: string
+): Promise<{ reference: ReferenceLap | null }> {
+  const res = await fetch(`/api/sessions/${sessionId}/default-reference`);
+  if (!res.ok) throw new Error(`Failed to fetch default reference: ${res.status}`);
+  return res.json();
+}
+
 // ---- Session reports (Phase 14) ----
 
 export interface SplitReportLap {

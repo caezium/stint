@@ -30,6 +30,9 @@ interface Props {
   durationMs: number | null;
   cleanLapCount: number | null;
   covPct: number | null;
+  /** Phase 15: PB/reference lap duration for "vs PB" delta pill. */
+  referenceMs?: number | null;
+  referenceLabel?: string | null;
 }
 
 /**
@@ -51,6 +54,8 @@ export const SessionHeaderStrip = forwardRef<HTMLDivElement, Props>(function Ses
     durationMs,
     cleanLapCount,
     covPct,
+    referenceMs,
+    referenceLabel,
   },
   ref,
 ) {
@@ -137,6 +142,17 @@ export const SessionHeaderStrip = forwardRef<HTMLDivElement, Props>(function Ses
               value={bestMs ? formatLapTime(bestMs) : "—"}
               accent
             />
+            {referenceMs != null && bestMs != null && referenceMs !== bestMs && (
+              <>
+                <StatDivider />
+                <Stat
+                  label={referenceLabel || "vs PB"}
+                  value={`${bestMs - referenceMs > 0 ? "+" : ""}${((bestMs - referenceMs) / 1000).toFixed(3)}s`}
+                  tone={bestMs <= referenceMs ? "good" : "bad"}
+                  size="sm"
+                />
+              </>
+            )}
             <StatDivider />
             <Stat label="Laps" value={String(validLapCount)} />
             {cleanLapCount != null && (

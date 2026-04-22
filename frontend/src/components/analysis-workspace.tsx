@@ -5,7 +5,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSessionStore } from "@/stores/session-store";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchLapDeltaPoints, fetchMathDefaults, type TrackData, type TrackOverlayData, type Track } from "@/lib/api";
+import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchLapDeltaPoints, fetchMathDefaults, fetchDefaultReference, type TrackData, type TrackOverlayData, type Track, type ReferenceLap } from "@/lib/api";
 import { PlaybackControls } from "@/components/playback-controls";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
@@ -97,6 +97,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   const [lapTracks, setLapTracks] = useState<Map<string, TrackData>>(new Map());
   const [trackOverlay, setTrackOverlay] = useState<TrackOverlayData | null>(null);
   const [trackColorChannel, setTrackColorChannel] = useState("speed");
+  const [referenceLap, setReferenceLap] = useState<ReferenceLap | null>(null);
   const [addChartOpen, setAddChartOpen] = useState(false);
   const [showMathEditor, setShowMathEditor] = useState(false);
   const loadSession = useSessionStore((s) => s.loadSession);
@@ -297,46 +298,68 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; };
   }, [sessionId, activeLapsForMap, lapTracks]);
 
+  // Phase 15: resolve the applicable reference lap for this (driver, venue)
+  useEffect(() => {
+    let cancelled = false;
+    fetchDefaultReference(sessionId)
+      .then((r) => !cancelled && setReferenceLap(r.reference))
+      .catch(() => !cancelled && setReferenceLap(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   // Fetch track overlay when color channel changes
   useEffect(() => {
     if (trackColorChannel === "speed") {
       setTrackOverlay(null);
       return;
     }
-    // Phase 13.2: delta-t overlay — paint the driven line by where this lap
-    // gained/lost time vs the session's best lap (reference-lap-picker will
-    // make this configurable in Phase 15).
+    // Phase 13.2/15: delta-t overlay against the resolved reference lap.
+    // Prefers Phase-15 cross-session reference; falls back to this session's
+    // best racing lap when no reference exists yet.
     if (trackColorChannel === "__delta__") {
       if (!session || !refLap) {
         setTrackOverlay(null);
         return;
       }
-      // Reference = best (fastest) racing lap of the current session.
-      const racing = session.laps.filter(
-        (l) => l.num > 0 && l.duration_ms > 0 && !l.is_pit_lap
-      );
-      if (racing.length < 2) {
-        setTrackOverlay(null);
-        return;
+      let refSessionId: string;
+      let refLapNum: number;
+      let refLabel: string;
+      if (referenceLap && referenceLap.session_id && referenceLap.lap_num) {
+        refSessionId = referenceLap.session_id;
+        refLapNum = referenceLap.lap_num;
+        refLabel = referenceLap.kind === "pb" ? `Δ vs PB` : `Δ vs ${referenceLap.name || "ref"}`;
+      } else {
+        const racing = session.laps.filter(
+          (l) => l.num > 0 && l.duration_ms > 0 && !l.is_pit_lap
+        );
+        if (racing.length < 2) {
+          setTrackOverlay(null);
+          return;
+        }
+        const best = racing.reduce((a, b) =>
+          b.duration_ms < a.duration_ms ? b : a
+        );
+        refSessionId = sessionId;
+        refLapNum = best.num;
+        refLabel = `Δ vs L${best.num}`;
       }
-      const best = racing.reduce((a, b) =>
-        b.duration_ms < a.duration_ms ? b : a
-      );
-      if (best.num === refLap.num) {
+      if (refSessionId === sessionId && refLapNum === refLap.num) {
         // Comparing a lap against itself yields all zeros; not useful.
         setTrackOverlay(null);
         return;
       }
       fetchLapDeltaPoints(sessionId, refLap.num, {
-        session_id: sessionId,
-        lap: best.num,
+        session_id: refSessionId,
+        lap: refLapNum,
       })
         .then((d) => {
           setTrackOverlay({
             lat: d.lat,
             lon: d.lon,
             values: d.delta_s,
-            channel: `Δ vs L${best.num}`,
+            channel: refLabel,
             point_count: d.lat.length,
           });
         })
@@ -346,7 +369,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     fetchTrackOverlay(sessionId, trackColorChannel, refLap?.num)
       .then(setTrackOverlay)
       .catch(() => setTrackOverlay(null));
-  }, [sessionId, trackColorChannel, refLap, session]);
+  }, [sessionId, trackColorChannel, refLap, session, referenceLap]);
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
