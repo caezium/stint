@@ -690,3 +690,141 @@ async def get_track(session_id: str, lap: int | None = None):
         "timecodes": tc_sampled,
         "point_count": len(lat_sampled),
     }
+
+
+# ---------------------------------------------------------------------------
+# Channels Report (Phase 14.2) — per-lap aggregate statistics for any number
+# of channels, returned in one shot so the UI renders a pivoted table.
+# ---------------------------------------------------------------------------
+
+
+_SUPPORTED_STATS = {"min", "max", "avg", "p50", "p90", "p99", "std", "count"}
+
+
+@router.get("/sessions/{session_id}/channels-report")
+async def channels_report(
+    session_id: str,
+    channels: str = Query(..., description="Comma-separated channel names"),
+    stats: str = Query(
+        "min,max,avg,p90",
+        description="Comma-separated subset of: min,max,avg,p50,p90,p99,std,count",
+    ),
+    include_pit_laps: bool = Query(False),
+):
+    """Return per-lap aggregate stats for a set of channels.
+
+    Response shape (names are literals, values are numbers or null):
+        {
+          "channels": ["RPM","GPS Speed", ...],
+          "stats": ["min","max","avg","p90"],
+          "laps": [
+            {"num":1,"duration_ms":45200,"is_pit_lap":false,
+             "cells":{"RPM":{"min":8000,"max":14200,"avg":...,"p90":...}, ...}},
+            ...
+          ],
+          "session_wide":{"RPM":{"min":...,"max":...,"avg":...,"p90":...}, ...}
+        }
+    """
+    ch_list = [c.strip() for c in channels.split(",") if c.strip()]
+    if not ch_list:
+        raise HTTPException(400, "channels query param cannot be empty")
+
+    wanted_stats = [s.strip() for s in stats.split(",") if s.strip()]
+    bad = [s for s in wanted_stats if s not in _SUPPORTED_STATS]
+    if bad:
+        raise HTTPException(
+            400,
+            f"unsupported stat(s): {bad}. supported: {sorted(_SUPPORTED_STATS)}",
+        )
+
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT num, duration_ms, is_pit_lap FROM laps "
+            "WHERE session_id = ? ORDER BY num",
+            (session_id,),
+        )
+        lap_rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    if not lap_rows:
+        raise HTTPException(404, f"No laps for session {session_id}")
+
+    def _compute(values: np.ndarray) -> dict[str, float | None]:
+        if values.size == 0:
+            return {s: None for s in wanted_stats}
+        out: dict[str, float | None] = {}
+        for s in wanted_stats:
+            if s == "min":
+                out[s] = float(np.min(values))
+            elif s == "max":
+                out[s] = float(np.max(values))
+            elif s == "avg":
+                out[s] = float(np.mean(values))
+            elif s == "p50":
+                out[s] = float(np.percentile(values, 50))
+            elif s == "p90":
+                out[s] = float(np.percentile(values, 90))
+            elif s == "p99":
+                out[s] = float(np.percentile(values, 99))
+            elif s == "std":
+                out[s] = float(np.std(values))
+            elif s == "count":
+                out[s] = int(values.size)
+        return out
+
+    # Collect all-session values per channel for session_wide rollup.
+    session_wide_bins: dict[str, list[np.ndarray]] = {c: [] for c in ch_list}
+    laps_out: list[dict] = []
+
+    for lap in lap_rows:
+        if lap["num"] <= 0 or lap["duration_ms"] <= 0:
+            continue
+        if lap.get("is_pit_lap") and not include_pit_laps:
+            # Still emit the row so the UI can render it greyed, but skip
+            # stats computation to save time.
+            laps_out.append({
+                "num": lap["num"],
+                "duration_ms": lap["duration_ms"],
+                "is_pit_lap": True,
+                "cells": {c: {s: None for s in wanted_stats} for c in ch_list},
+            })
+            continue
+
+        table = get_resampled_lap_data(session_id, ch_list, lap["num"])
+        cells: dict[str, dict[str, float | None]] = {}
+        if table is None:
+            cells = {c: {s: None for s in wanted_stats} for c in ch_list}
+        else:
+            for c in ch_list:
+                try:
+                    col = np.asarray(table.column(c).to_pylist(), dtype=np.float64)
+                    col = col[np.isfinite(col)]
+                except Exception:
+                    col = np.asarray([], dtype=np.float64)
+                cells[c] = _compute(col)
+                if col.size:
+                    session_wide_bins[c].append(col)
+
+        laps_out.append({
+            "num": lap["num"],
+            "duration_ms": lap["duration_ms"],
+            "is_pit_lap": bool(lap.get("is_pit_lap")),
+            "cells": cells,
+        })
+
+    session_wide: dict[str, dict[str, float | None]] = {}
+    for c, chunks in session_wide_bins.items():
+        if chunks:
+            merged = np.concatenate(chunks)
+            session_wide[c] = _compute(merged)
+        else:
+            session_wide[c] = {s: None for s in wanted_stats}
+
+    return {
+        "channels": ch_list,
+        "stats": wanted_stats,
+        "laps": laps_out,
+        "session_wide": session_wide,
+    }

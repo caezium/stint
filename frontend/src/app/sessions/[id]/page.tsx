@@ -24,6 +24,8 @@ import { LogSheetPanel } from "@/components/log-sheet-panel";
 import { AnomalyPanel } from "@/components/anomaly-panel";
 import { AnnotationsPanel } from "@/components/annotations-panel";
 import { ProposalsPanel } from "@/components/proposals-panel";
+import { SplitReportPanel } from "@/components/split-report-panel";
+import { ChannelsReportPanel } from "@/components/channels-report-panel";
 import {
   DebriefHeadline,
   DrivingFingerprintCard,
@@ -244,6 +246,10 @@ export default function SessionDetailPage() {
             <AnomalyPanel sessionId={id} defaultCollapsed />
 
             <ProposalsPanel sessionId={id} />
+
+            <SplitReportPanel sessionId={id} />
+
+            <ChannelsReportPanel sessionId={id} />
 
             <AnnotationsPanel sessionId={id} laps={session.laps} />
 
