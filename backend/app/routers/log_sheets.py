@@ -228,8 +228,14 @@ def _fetch_openmeteo_history(lat: float, lon: float, dt: int) -> dict:
     return {"data": [{"temp": temp, "weather": [{"description": desc}]}]}
 
 
-@router.post("/sessions/{session_id}/fetch-weather")
-async def fetch_weather(session_id: str):
+async def _fetch_and_persist_weather(session_id: str) -> dict:
+    """Shared internal helper so both the /fetch-weather endpoint and the
+    `fetch_weather` background job (Phase 25) hit the same code path.
+
+    Returns a dict like the endpoint response, or raises HTTPException on
+    user-facing errors / ValueError on programmatic errors. Idempotent:
+    existing weather fields on the log sheet are preserved.
+    """
     meta = await _get_session_metadata(session_id)
     if not meta:
         raise HTTPException(404, "Session not found")
@@ -261,11 +267,13 @@ async def fetch_weather(session_id: str):
         if isinstance(d, dict):
             return bool(d)
         return bool(d)
+    source = "openweather"
     if not _has_data(payload):
         try:
             payload = await asyncio.get_event_loop().run_in_executor(
                 None, _fetch_openmeteo_history, lat, lon, dt
             )
+            source = "open-meteo"
         except Exception as e:
             errors.append(f"Open-Meteo: {e}")
             raise HTTPException(501, "; ".join(errors) or "Weather fetch failed")
@@ -275,7 +283,7 @@ async def fetch_weather(session_id: str):
     if isinstance(data_list, dict):
         data_list = [data_list]
     if not data_list:
-        raise HTTPException(501, "OpenWeather returned no data")
+        raise HTTPException(501, "Weather provider returned no data")
     first = data_list[0]
     air_temp = first.get("temp")
     weather = ""
@@ -297,7 +305,7 @@ async def fetch_weather(session_id: str):
 
         new_weather = existing_weather or weather
         new_air = existing_air if existing_air else (float(air_temp) if air_temp is not None else 0)
-        # Track temp: OpenWeather doesn't provide; leave existing.
+        # Track temp: weather providers don't give this; leave existing.
         new_track = existing_track
 
         await db.execute(
@@ -321,5 +329,39 @@ async def fetch_weather(session_id: str):
         "weather": new_weather,
         "air_temp": new_air,
         "track_temp": new_track,
-        "source": "openweather",
+        "source": source,
     }
+
+
+@router.post("/sessions/{session_id}/fetch-weather")
+async def fetch_weather(session_id: str):
+    return await _fetch_and_persist_weather(session_id)
+
+
+@router.post("/log-sheets/fetch-weather-all")
+async def fetch_weather_all():
+    """Retry UI hook (Phase 25.3) — enqueue `fetch_weather` for every session
+    that has no weather populated yet. Useful after adding an OpenWeather
+    API key, or if Open-Meteo was down during initial upload.
+    """
+    from ..jobs import enqueue_job
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT s.id FROM sessions s "
+            "LEFT JOIN session_log_sheets ls ON ls.session_id = s.id "
+            "WHERE (s.deleted_at IS NULL OR s.deleted_at = '') "
+            "AND (ls.weather IS NULL OR ls.weather = '') "
+            "ORDER BY s.created_at DESC"
+        )
+        ids = [r[0] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    enqueued = 0
+    for sid in ids:
+        try:
+            await enqueue_job("fetch_weather", sid)
+            enqueued += 1
+        except Exception:
+            pass
+    return {"enqueued": enqueued, "total_candidates": len(ids)}

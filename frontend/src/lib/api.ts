@@ -26,6 +26,10 @@ export interface Session {
   track_id?: number | null;
   /** Present only when list fetched with includeTags=true. */
   tags?: string[];
+  /** Weather description from the log sheet (Phase 25). */
+  weather?: string | null;
+  /** Air temperature in °C from the log sheet (Phase 25). */
+  air_temp?: number | null;
 }
 
 export interface Lap {

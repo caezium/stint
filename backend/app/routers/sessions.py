@@ -22,37 +22,52 @@ async def list_sessions(
     db = await get_db()
     try:
         # Exclude soft-deleted sessions by default (Phase 22.4).
+        # Phase 25 — left-join the log sheet so the weather chip + air_temp
+        # are available on the cards without a second round-trip.
         query = (
-            "SELECT * FROM sessions "
-            "WHERE (deleted_at IS NULL OR deleted_at = '')"
+            "SELECT s.*, ls.weather AS ls_weather, ls.air_temp AS ls_air_temp "
+            "FROM sessions s "
+            "LEFT JOIN session_log_sheets ls ON ls.session_id = s.id "
+            "WHERE (s.deleted_at IS NULL OR s.deleted_at = '')"
         )
         params = []
 
         if driver:
-            query += " AND driver = ?"
+            query += " AND s.driver = ?"
             params.append(driver)
         if venue:
-            query += " AND venue = ?"
+            query += " AND s.venue = ?"
             params.append(venue)
         if driver_id is not None:
-            query += " AND driver_id = ?"
+            query += " AND s.driver_id = ?"
             params.append(driver_id)
         if vehicle_id is not None:
-            query += " AND vehicle_id = ?"
+            query += " AND s.vehicle_id = ?"
             params.append(vehicle_id)
         if search:
-            query += " AND (driver LIKE ? OR venue LIKE ? OR vehicle LIKE ? OR file_name LIKE ?)"
+            query += " AND (s.driver LIKE ? OR s.venue LIKE ? OR s.vehicle LIKE ? OR s.file_name LIKE ?)"
             params.extend([f"%{search}%"] * 4)
 
         if sort == "date_desc":
-            query += " ORDER BY created_at DESC"
+            query += " ORDER BY s.created_at DESC"
         elif sort == "date_asc":
-            query += " ORDER BY created_at ASC"
+            query += " ORDER BY s.created_at ASC"
         elif sort == "venue":
-            query += " ORDER BY venue, created_at DESC"
+            query += " ORDER BY s.venue, s.created_at DESC"
 
         rows = await db.execute(query, params)
-        sessions = [dict(row) async for row in rows]
+        sessions = []
+        async for row in rows:
+            d = dict(row)
+            # Promote the joined fields to canonical names, drop the helper
+            # prefixes so the client-side Session type stays clean.
+            weather = d.pop("ls_weather", None)
+            air_temp = d.pop("ls_air_temp", None)
+            d["weather"] = weather or None
+            d["air_temp"] = (
+                float(air_temp) if air_temp not in (None, 0, 0.0) else None
+            )
+            sessions.append(d)
 
         if include_tags and sessions:
             from ..tags import get_tags_for_sessions
