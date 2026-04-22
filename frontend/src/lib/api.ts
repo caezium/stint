@@ -1571,3 +1571,33 @@ export async function fetchTrackOverlay(
   if (!res.ok) throw new Error(`Failed to fetch track overlay: ${res.status}`);
   return res.json();
 }
+
+// ---- Time-compare overlay (Phase 13.2) ----
+
+export interface LapDeltaPointsData {
+  lat: number[];
+  lon: number[];
+  delta_s: number[];
+  ref: { session_id: string; lap: number };
+}
+
+/**
+ * Per-GPS-point delta seconds vs a reference lap. Used by the track map to
+ * colour the driven line by where time is won/lost vs the reference.
+ */
+export async function fetchLapDeltaPoints(
+  sessionId: string,
+  lap: number,
+  ref: { session_id: string; lap: number }
+): Promise<LapDeltaPointsData> {
+  const res = await fetch(
+    `/api/sessions/${sessionId}/laps/${lap}/delta-points`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref }),
+    }
+  );
+  if (!res.ok) throw new Error(`Failed to fetch delta points: ${res.status}`);
+  return res.json();
+}
