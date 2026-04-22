@@ -133,6 +133,19 @@ class SfLineBody(BaseModel):
     lon2: float
 
 
+class SplitBody(BaseModel):
+    """A split line. Geometry fields match SfLineBody; `label` and `type` are
+    optional metadata used by the split report and the track-map renderer
+    (Phase 24.1). Old splits persisted without these fields remain valid."""
+
+    lat1: float
+    lon1: float
+    lat2: float
+    lon2: float
+    label: str = ""
+    type: str = ""
+
+
 @router.put("/tracks/{track_id}/sf-line")
 async def set_track_sf_line(track_id: int, body: SfLineBody):
     db = await get_db()
@@ -183,7 +196,7 @@ async def set_track_pit_lane(track_id: int, body: PitLaneBody):
 
 
 class SplitsBody(BaseModel):
-    splits: List[SfLineBody]
+    splits: List[SplitBody]
 
 
 @router.put("/tracks/{track_id}/splits")
@@ -205,6 +218,50 @@ async def set_track_splits(track_id: int, body: SplitsBody):
         except Exception:
             pass
     return {"ok": True}
+
+
+@router.post("/tracks/{target_id}/copy-splits-from/{source_id}")
+async def copy_splits_from(target_id: int, source_id: int):
+    """Clone split_lines + their labels/types from another track (Phase 24.2).
+
+    Replaces the target's splits wholesale. Any sessions bound to the target
+    are recomputed so their sector_times reflect the new geometry.
+    """
+    if target_id == source_id:
+        raise HTTPException(400, "source and target must differ")
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT id, split_lines_json FROM tracks WHERE id IN (?, ?)",
+            (target_id, source_id),
+        )
+        rows = {r["id"]: r for r in await cur.fetchall()}
+        if source_id not in rows:
+            raise HTTPException(404, "source track not found")
+        if target_id not in rows:
+            raise HTTPException(404, "target track not found")
+        src = rows[source_id]["split_lines_json"] or "[]"
+        try:
+            count = len(json.loads(src) or [])
+        except Exception:
+            count = 0
+        await db.execute(
+            "UPDATE tracks SET split_lines_json = ? WHERE id = ?",
+            (src, target_id),
+        )
+        cur = await db.execute(
+            "SELECT id FROM sessions WHERE track_id = ?", (target_id,)
+        )
+        bound = [r["id"] for r in await cur.fetchall()]
+        await db.commit()
+    finally:
+        await db.close()
+    for sid in bound:
+        try:
+            await recompute_session_from_track(sid, target_id)
+        except Exception:
+            pass
+    return {"ok": True, "split_count": count, "recomputed_sessions": len(bound)}
 
 
 @router.delete("/tracks/{track_id}/sf-line")

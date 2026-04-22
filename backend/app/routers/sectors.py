@@ -194,6 +194,25 @@ async def split_report(session_id: str):
             (session_id,),
         )
         lap_rows = [dict(r) for r in await cur.fetchall()]
+
+        # Phase 24.1 — if the session is bound to a track whose splits carry
+        # labels/types, surface them alongside the auto "S1..Sn" fallback.
+        cur = await db.execute(
+            "SELECT track_id FROM sessions WHERE id = ?", (session_id,)
+        )
+        sess_row = await cur.fetchone()
+        track_split_meta: list[dict] = []
+        if sess_row and sess_row["track_id"]:
+            cur = await db.execute(
+                "SELECT split_lines_json FROM tracks WHERE id = ?",
+                (sess_row["track_id"],),
+            )
+            tr = await cur.fetchone()
+            if tr:
+                try:
+                    track_split_meta = json.loads(tr["split_lines_json"] or "[]") or []
+                except Exception:
+                    track_split_meta = []
     finally:
         await db.close()
 
@@ -215,9 +234,20 @@ async def split_report(session_id: str):
             return {}
 
     # Best time per sector across racing laps (excludes pit laps).
+    # Fallback chain: sectors table → sector_times rows → lap.split_times_json.
     sector_nums = [s["sector_num"] for s in sectors] or sorted({
         sn for row in st_by_lap.values() for sn in row.keys()
     })
+    if not sector_nums:
+        max_len = 0
+        for lap in lap_rows:
+            try:
+                arr = json.loads(lap.get("split_times_json") or "[]") or []
+                if len(arr) > max_len:
+                    max_len = len(arr)
+            except Exception:
+                pass
+        sector_nums = list(range(1, max_len + 1))
     best_per_sector: dict[int, int] = {}
     for lap in lap_rows:
         if lap.get("is_pit_lap") or lap["duration_ms"] <= 0:
@@ -267,10 +297,26 @@ async def split_report(session_id: str):
         else None
     )
 
+    # Build output sectors list, enriching labels/types from the bound track
+    # when present. A track's split N-1 feeds the boundary leading into
+    # sector N, so sector N inherits metadata from track_split_meta[N-1].
+    def enrich(sn: int, fallback_label: str) -> dict:
+        meta = (
+            track_split_meta[sn - 1]
+            if 0 <= sn - 1 < len(track_split_meta)
+            else {}
+        )
+        label = (meta.get("label") if isinstance(meta, dict) else "") or fallback_label
+        typ = meta.get("type") if isinstance(meta, dict) else ""
+        return {"sector_num": sn, "label": label, "type": typ}
+
+    if sectors:
+        enriched = [enrich(s["sector_num"], s.get("label") or f"S{s['sector_num']}") for s in sectors]
+    else:
+        enriched = [enrich(sn, f"S{sn}") for sn in sector_nums]
+
     return {
-        "sectors": sectors or [
-            {"sector_num": sn, "label": f"S{sn}"} for sn in sector_nums
-        ],
+        "sectors": enriched,
         "laps": out_laps,
         "best_rolling_lap": (
             {"num": best_rolling["num"], "duration_ms": best_rolling["duration_ms"]}
