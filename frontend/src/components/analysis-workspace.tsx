@@ -528,14 +528,19 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
       return undefined;
     };
     const x = pick([
-      /^lat(eral)?[\s_]?accel/i,
-      /^acc[\s_]?y/i,
-      /lat.*g/i,
+      /^lat(eral)?[\s_]?accel?$/i,
+      /lat(eral)?[\s_]?accel/i,            // matches "GPS_LateralAcc"
+      /lat(eral)?[\s_]?acc$/i,
+      /^acc[\s_]?y$/i,
+      /lat.*g$/i,
     ]);
     const y = pick([
-      /^long(itudinal)?[\s_]?accel/i,
-      /^acc[\s_]?x/i,
-      /long.*g/i,
+      /^long(itudinal)?[\s_]?accel?$/i,
+      /long(itudinal)?[\s_]?accel/i,       // matches "GPS_LongitudinalAcc"
+      /^inline[\s_]?acc/i,                 // AiM naming — "GPS_InlineAcc"
+      /inline[\s_]?acc/i,
+      /^acc[\s_]?x$/i,
+      /long.*g$/i,
     ]);
     setCharts((prev) => [
       ...prev,
