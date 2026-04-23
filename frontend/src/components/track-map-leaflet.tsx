@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { MapContainer, TileLayer, Polyline, useMap, LayersControl } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, CircleMarker, useMap, LayersControl, Tooltip } from "react-leaflet";
 import type { LatLngBoundsExpression, LatLngExpression } from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -10,6 +10,20 @@ export interface SfLineLL {
   lon1: number;
   lat2: number;
   lon2: number;
+}
+
+export interface CornerOverlay {
+  corner_num: number;
+  label?: string | null;
+  direction?: "left" | "right";
+  peak_lat_g: number;
+  start_lat: number | null;
+  start_lon: number | null;
+  end_lat: number | null;
+  end_lon: number | null;
+  apex_lat: number | null;
+  apex_lon: number | null;
+  start_ts_ms: number | null;
 }
 
 export interface TrackMapLeafletProps {
@@ -25,6 +39,14 @@ export interface TrackMapLeafletProps {
   splitLines?: SfLineLL[];
   /** Optional pit-lane polygon as [[lat,lon], ...] (rendered as closed polyline) */
   pitLane?: number[][];
+  /** Optional corner arcs overlay — each corner gets a thick colored segment
+      between start_lat/lon and end_lat/lon plus an apex dot. Color ramps
+      from amber (low-g) to red (high-g). */
+  corners?: CornerOverlay[];
+  /** Highlight one corner by corner_num (e.g., hover / keyboard focus). */
+  activeCornerNum?: number | null;
+  /** Click handler for a corner row on the map. */
+  onCornerClick?: (c: CornerOverlay) => void;
   /** Called with {lat, lon} of a click on the map; coordinates are real WGS84 */
   onMapClick?: (pt: { lat: number; lon: number }) => void;
   /** Height in px (width fills container) */
@@ -83,6 +105,25 @@ function sampleRamp(t: number): string {
   return `rgb(${r},${g},${bl})`;
 }
 
+// Corner color ramp: amber (moderate g) → orange → red (peak g).
+function cornerColor(peakG: number): string {
+  const t = Math.max(0, Math.min(1, (Math.abs(peakG) - 0.5) / 1.8));
+  const ramp: [number, number, number][] = [
+    [251, 191, 36],   // amber-400
+    [249, 115, 22],   // orange-500
+    [239, 68, 68],    // red-500
+  ];
+  const seg = t * (ramp.length - 1);
+  const i = Math.floor(seg);
+  const f = seg - i;
+  const a = ramp[i];
+  const b = ramp[Math.min(ramp.length - 1, i + 1)];
+  const r = Math.round(a[0] + (b[0] - a[0]) * f);
+  const g = Math.round(a[1] + (b[1] - a[1]) * f);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * f);
+  return `rgb(${r},${g},${bl})`;
+}
+
 export default function TrackMapLeaflet({
   outline,
   speed,
@@ -90,6 +131,9 @@ export default function TrackMapLeaflet({
   sfLine,
   splitLines = [],
   pitLane,
+  corners = [],
+  activeCornerNum = null,
+  onCornerClick,
   onMapClick,
   height = 500,
   className,
@@ -229,6 +273,67 @@ export default function TrackMapLeaflet({
             pathOptions={{ color: "#f97316", weight: 2, dashArray: "4 2" }}
           />
         )}
+
+        {corners
+          .filter(
+            (c) =>
+              c.start_lat != null &&
+              c.start_lon != null &&
+              c.end_lat != null &&
+              c.end_lon != null,
+          )
+          .map((c) => {
+            const isActive = activeCornerNum === c.corner_num;
+            const col = cornerColor(c.peak_lat_g);
+            return (
+              <Polyline
+                key={`corner-${c.corner_num}`}
+                positions={[
+                  [c.start_lat as number, c.start_lon as number],
+                  [c.end_lat as number, c.end_lon as number],
+                ]}
+                pathOptions={{
+                  color: col,
+                  weight: isActive ? 9 : 6,
+                  opacity: isActive ? 1 : 0.85,
+                }}
+                eventHandlers={{
+                  click: () => onCornerClick?.(c),
+                }}
+              >
+                <Tooltip direction="top" opacity={0.95} sticky>
+                  <span style={{ fontSize: 11 }}>
+                    {c.label || `C${c.corner_num}`}
+                    {" · "}
+                    {(c.peak_lat_g > 0 ? "+" : "")}
+                    {c.peak_lat_g.toFixed(2)}g · {c.direction}
+                  </span>
+                </Tooltip>
+              </Polyline>
+            );
+          })}
+
+        {corners
+          .filter((c) => c.apex_lat != null && c.apex_lon != null)
+          .map((c) => {
+            const isActive = activeCornerNum === c.corner_num;
+            return (
+              <CircleMarker
+                key={`apex-${c.corner_num}`}
+                center={[c.apex_lat as number, c.apex_lon as number]}
+                radius={isActive ? 7 : 4}
+                pathOptions={{
+                  color: "#111827",
+                  weight: 2,
+                  fillColor: cornerColor(c.peak_lat_g),
+                  fillOpacity: 1,
+                }}
+                eventHandlers={{
+                  click: () => onCornerClick?.(c),
+                }}
+              />
+            );
+          })}
       </MapContainer>
     </div>
   );
