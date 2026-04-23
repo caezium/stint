@@ -594,6 +594,27 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         "ON corners(session_id, corner_num)"
     )
 
+    # Corners widening (Phase 26.1+) — persist timestamps, apex + boundary
+    # lat/lon so downstream UI can draw map overlays, click-to-jump to a
+    # cursor, and animate an apex marker during playback. Also a free-text
+    # label column for user-friendly corner names ("Hairpin", "T1", etc.).
+    cur = await db.execute("PRAGMA table_info(corners)")
+    ccols = {row[1] for row in await cur.fetchall()}
+    for col, ddl in [
+        ("label", "ALTER TABLE corners ADD COLUMN label TEXT DEFAULT ''"),
+        ("start_ts_ms", "ALTER TABLE corners ADD COLUMN start_ts_ms INTEGER"),
+        ("end_ts_ms", "ALTER TABLE corners ADD COLUMN end_ts_ms INTEGER"),
+        ("apex_ts_ms", "ALTER TABLE corners ADD COLUMN apex_ts_ms INTEGER"),
+        ("apex_lat", "ALTER TABLE corners ADD COLUMN apex_lat REAL"),
+        ("apex_lon", "ALTER TABLE corners ADD COLUMN apex_lon REAL"),
+        ("start_lat", "ALTER TABLE corners ADD COLUMN start_lat REAL"),
+        ("start_lon", "ALTER TABLE corners ADD COLUMN start_lon REAL"),
+        ("end_lat", "ALTER TABLE corners ADD COLUMN end_lat REAL"),
+        ("end_lon", "ALTER TABLE corners ADD COLUMN end_lon REAL"),
+    ]:
+        if col not in ccols:
+            await db.execute(ddl)
+
     # Structured vehicle setup (Phase 26.4) — gear ratios / tire data / notes
     # persisted per session. Complements the existing session_log_sheets free-
     # form notes with a structured schema the UI can render as a form.

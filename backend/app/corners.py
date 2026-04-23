@@ -268,13 +268,17 @@ async def detect_corners(session_id: str) -> int:
             # Direction from peak sign (positive = right-hand in most
             # loggers but loggers differ — store as 'left'/'right' agnostic)
             direction = "right" if peak_g >= 0 else "left"
+            apex_grid_idx = start + peak_idx
             corners.append({
                 "start_ts": float(grid[start]),
                 "end_ts": float(grid[end]),
+                "apex_ts": float(grid[apex_grid_idx]),
                 "start_lat": float(seg_lats[0]),
                 "start_lon": float(seg_lons[0]),
                 "end_lat": float(seg_lats[-1]),
                 "end_lon": float(seg_lons[-1]),
+                "apex_lat": float(lat_r[apex_grid_idx]),
+                "apex_lon": float(lon_r[apex_grid_idx]),
                 "peak_lat_g": peak_g,
                 "entry_speed": entry,
                 "exit_speed": exit_,
@@ -297,16 +301,26 @@ async def detect_corners(session_id: str) -> int:
         idx = max(0, min(len(cum) - 1, idx))
         return float(cum[idx])
 
-    # Persist
+    # Persist. Preserve any existing user-edited labels across re-detections
+    # by matching on corner_num — a rough approximation but reliable when the
+    # detector is stable. Users can always re-label after a major retune.
     db = await get_db()
     try:
+        cur = await db.execute(
+            "SELECT corner_num, label FROM corners WHERE session_id = ?",
+            (session_id,),
+        )
+        old_labels = {int(r["corner_num"]): r["label"] for r in await cur.fetchall()}
         await db.execute("DELETE FROM corners WHERE session_id = ?", (session_id,))
         for i, c in enumerate(corners, start=1):
             await db.execute(
                 """INSERT INTO corners
                    (session_id, corner_num, start_distance_m, end_distance_m,
-                    peak_lat_g, entry_speed, exit_speed, min_speed, direction)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    peak_lat_g, entry_speed, exit_speed, min_speed, direction,
+                    start_ts_ms, end_ts_ms, apex_ts_ms,
+                    start_lat, start_lon, end_lat, end_lon,
+                    apex_lat, apex_lon, label)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     i,
@@ -317,6 +331,16 @@ async def detect_corners(session_id: str) -> int:
                     c["exit_speed"],
                     c["min_speed"],
                     c["direction"],
+                    int(c["start_ts"]),
+                    int(c["end_ts"]),
+                    int(c["apex_ts"]),
+                    c["start_lat"],
+                    c["start_lon"],
+                    c["end_lat"],
+                    c["end_lon"],
+                    c["apex_lat"],
+                    c["apex_lon"],
+                    old_labels.get(i, ""),
                 ),
             )
         await db.commit()
@@ -331,10 +355,102 @@ async def list_corners(session_id: str) -> list[dict]:
     try:
         cur = await db.execute(
             "SELECT corner_num, start_distance_m, end_distance_m, peak_lat_g, "
-            "entry_speed, exit_speed, min_speed, direction "
+            "entry_speed, exit_speed, min_speed, direction, label, "
+            "start_ts_ms, end_ts_ms, apex_ts_ms, "
+            "start_lat, start_lon, end_lat, end_lon, apex_lat, apex_lon "
             "FROM corners WHERE session_id = ? ORDER BY corner_num",
             (session_id,),
         )
         return [dict(r) for r in await cur.fetchall()]
     finally:
         await db.close()
+
+
+async def set_corner_label(session_id: str, corner_num: int, label: str) -> bool:
+    """Persist a user-provided free-text name for a corner. Returns True if
+    the row existed and was updated, False otherwise."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "UPDATE corners SET label = ? WHERE session_id = ? AND corner_num = ?",
+            (label or "", session_id, int(corner_num)),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+    finally:
+        await db.close()
+
+
+async def per_lap_corner_times(session_id: str) -> list[dict]:
+    """For each corner × each lap, compute the time the driver spent within
+    the corner's distance band and the entry/min/exit speed on that lap.
+    Feeds the consistency panel and the Δ vs PB column.
+
+    Uses per-lap GPS traces projected to cumulative distance. A sample is
+    "inside the corner" when its cumulative distance within that lap falls
+    between the corner's start_distance_m and end_distance_m.
+    """
+    corners = await list_corners(session_id)
+    if not corners:
+        return []
+
+    lat_pair = _try_read_channel(session_id, ["GPS Latitude", "GPS_Latitude"])
+    lon_pair = _try_read_channel(session_id, ["GPS Longitude", "GPS_Longitude"])
+    spd_pair = _try_read_channel(session_id, ["GPS Speed", "Speed"])
+    if not (lat_pair and lon_pair and spd_pair):
+        return []
+
+    # Pull lap bounds
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT num, start_time_ms, end_time_ms, is_pit_lap FROM laps "
+            "WHERE session_id = ? AND num > 0 AND duration_ms > 0 ORDER BY num",
+            (session_id,),
+        )
+        laps = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    lat_ts, lat_vals = lat_pair
+    lon_ts, lon_vals = lon_pair
+    spd_ts, spd_vals = spd_pair
+    spd_mps_all = (
+        spd_vals / 3.6 if float(np.nanmax(spd_vals)) > 40.0 else spd_vals
+    )
+
+    out: list[dict] = []
+    for lap in laps:
+        lap_start = int(lap["start_time_ms"])
+        lap_end = int(lap["end_time_ms"])
+        lap_num = int(lap["num"])
+        step_ms = 40.0
+        if lap_end - lap_start < 1000:
+            continue
+        grid = np.arange(lap_start, lap_end, step_ms)
+        if grid.size < 5:
+            continue
+        lat_r = np.interp(grid, lat_ts, lat_vals)
+        lon_r = np.interp(grid, lon_ts, lon_vals)
+        spd_r = np.interp(grid, spd_ts, spd_mps_all)
+        cum = _cumulative_distance(lat_r, lon_r)
+        for corner in corners:
+            start_d = float(corner["start_distance_m"])
+            end_d = float(corner["end_distance_m"])
+            mask = (cum >= start_d) & (cum <= end_d)
+            if not mask.any():
+                continue
+            seg_spd = spd_r[mask]
+            # Corner time = span of ts values in the mask.
+            ts_in = grid[mask]
+            corner_ms = int(ts_in[-1] - ts_in[0]) if ts_in.size >= 2 else 0
+            out.append({
+                "lap_num": lap_num,
+                "corner_num": int(corner["corner_num"]),
+                "is_pit_lap": bool(lap.get("is_pit_lap")),
+                "corner_ms": corner_ms,
+                "entry_speed": float(seg_spd[0] * 3.6),
+                "exit_speed": float(seg_spd[-1] * 3.6),
+                "min_speed": float(seg_spd.min() * 3.6),
+            })
+    return out
