@@ -325,9 +325,8 @@ export default function TrackEditPage() {
                   size="sm"
                   variant={mode === "split" ? "default" : "secondary"}
                   onClick={() => setMode("split")}
-                  disabled={splits.length >= 8}
                 >
-                  Add split ({splits.length}/8)
+                  Splits ({splits.length}/8)
                 </Button>
                 <Button
                   size="sm"
