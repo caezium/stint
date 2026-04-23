@@ -197,16 +197,24 @@ async def detect_corners(session_id: str) -> int:
         padded = np.pad(ltg, (pad, w - pad - 1), mode="edge")
         ltg = np.convolve(padded, np.ones(w) / w, mode="valid")
 
-    # Simple hysteresis detector: open at |g| > OPEN, close when |g| < CLOSE
-    # for at least MIN_GAP_MS.
+    # Hysteresis detector: open at |g| > OPEN, close on any of:
+    #   (a) |g| < CLOSE for at least MIN_GAP_MS ("straight release"), OR
+    #   (b) sign of LatG flips — a right-hand corner and the following left-
+    #       hand corner should never be merged even if the kart never fully
+    #       unloads between them (DJ-style flowing esses).
+    #   (c) corner has lasted more than MAX_DURATION_MS — karting corners
+    #       rarely exceed 5 s; longer spans mean the detector is eating a
+    #       straight or a sequence.
     OPEN_G = 0.30
     CLOSE_G = 0.15
     MIN_DURATION_MS = 800.0
+    MAX_DURATION_MS = 5000.0
     MIN_GAP_MS = 300.0
 
     abs_g = np.abs(ltg)
     above_open = abs_g > OPEN_G
     below_close = abs_g < CLOSE_G
+    sign = np.sign(ltg)
 
     corners: list[dict] = []
     i = 0
@@ -217,11 +225,21 @@ async def detect_corners(session_id: str) -> int:
             continue
         # Corner start: find the first "above_open" sample.
         start = i
-        # Extend while not in a sustained below_close segment.
+        start_sign = sign[start] if sign[start] != 0 else 1.0
+        # Extend while not in a sustained below_close segment AND the lateral
+        # sign stays consistent AND we haven't blown past the max duration.
         j = i + 1
         gap_start: Optional[int] = None
         end = start
         while j < n:
+            # (b) Sign flip — end the corner at the previous sample.
+            if sign[j] != 0 and sign[j] != start_sign and abs_g[j] > CLOSE_G:
+                end = j - 1
+                break
+            # (c) Max-duration guard — force-close at peak of |g| window.
+            if (grid[j] - grid[start]) > MAX_DURATION_MS:
+                end = j
+                break
             if below_close[j]:
                 if gap_start is None:
                     gap_start = j
