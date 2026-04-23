@@ -2133,6 +2133,70 @@ export interface Corner {
   exit_speed: number;
   min_speed: number;
   direction: "left" | "right";
+  /** Optional user-provided free-text name (e.g. "Hairpin"). */
+  label?: string | null;
+  /** Representative-lap absolute timestamps — ms since session start. */
+  start_ts_ms?: number | null;
+  end_ts_ms?: number | null;
+  apex_ts_ms?: number | null;
+  /** Representative-lap GPS coordinates for drawing map overlays. */
+  start_lat?: number | null;
+  start_lon?: number | null;
+  end_lat?: number | null;
+  end_lon?: number | null;
+  apex_lat?: number | null;
+  apex_lon?: number | null;
+}
+
+/** Phase 26.1+ per-lap corner timings for the consistency panel. */
+export interface CornerLapRow {
+  lap_num: number;
+  corner_num: number;
+  is_pit_lap: boolean;
+  corner_ms: number;
+  entry_speed: number;
+  exit_speed: number;
+  min_speed: number;
+}
+
+export interface CornerSummary {
+  corner_num: number;
+  lap_count: number;
+  best_corner_ms: number | null;
+  mean_corner_ms: number | null;
+  std_corner_ms: number | null;
+  cov_pct: number | null;
+  min_speed_std: number | null;
+  entry_speed_std: number | null;
+  exit_speed_std: number | null;
+  delta_vs_pb_ms: number | null;
+}
+
+export async function fetchCornersPerLap(
+  sessionId: string,
+): Promise<{ per_lap: CornerLapRow[]; summary: CornerSummary[] }> {
+  const res = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/corners/per-lap`,
+  );
+  if (!res.ok) throw new Error(`Failed to fetch corners per-lap: ${res.status}`);
+  return res.json();
+}
+
+export async function setCornerLabel(
+  sessionId: string,
+  cornerNum: number,
+  label: string,
+): Promise<{ ok: boolean; label: string }> {
+  const res = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/corners/${cornerNum}/label`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    },
+  );
+  if (!res.ok) throw new Error(`Failed to set corner label: ${res.status}`);
+  return res.json();
 }
 
 export async function fetchCorners(sessionId: string): Promise<Corner[]> {
