@@ -5,6 +5,27 @@ import { MapContainer, TileLayer, Polyline, CircleMarker, useMap, LayersControl,
 import type { LatLngBoundsExpression, LatLngExpression } from "leaflet";
 import "leaflet/dist/leaflet.css";
 
+// Phase 26 follow-up: apex pulse animation. Injected once at module load
+// so we don't need to depend on a global stylesheet edit.
+if (typeof document !== "undefined" && !document.getElementById("apex-pulse-style")) {
+  const style = document.createElement("style");
+  style.id = "apex-pulse-style";
+  style.textContent = `
+    @keyframes apex-pulse-ring {
+      0%   { transform: scale(1);   opacity: 0.55; }
+      80%  { opacity: 0; }
+      100% { transform: scale(3.2); opacity: 0; }
+    }
+    .apex-pulse-ring {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: apex-pulse-ring 1.4s ease-out infinite;
+      pointer-events: none;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export interface SfLineLL {
   lat1: number;
   lon1: number;
@@ -334,6 +355,30 @@ export default function TrackMapLeaflet({
               />
             );
           })}
+
+        {/* Pulsing apex ring — only the currently active corner shows it.
+            Drives the "where is the cursor right now" cue during playback. */}
+        {corners
+          .filter(
+            (c) =>
+              c.apex_lat != null &&
+              c.apex_lon != null &&
+              activeCornerNum === c.corner_num,
+          )
+          .map((c) => (
+            <CircleMarker
+              key={`apex-pulse-${c.corner_num}`}
+              center={[c.apex_lat as number, c.apex_lon as number]}
+              radius={9}
+              pathOptions={{
+                color: cornerColor(c.peak_lat_g),
+                weight: 3,
+                fillOpacity: 0,
+                opacity: 0.6,
+                className: "apex-pulse-ring",
+              }}
+            />
+          ))}
       </MapContainer>
     </div>
   );

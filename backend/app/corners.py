@@ -454,3 +454,70 @@ async def per_lap_corner_times(session_id: str) -> list[dict]:
                 "min_speed": float(seg_spd.min() * 3.6),
             })
     return out
+
+
+async def corner_time_ranges_per_lap(
+    session_id: str,
+) -> dict[int, list[tuple[int, int]]]:
+    """Return absolute (session-start-relative) ms time ranges for each lap's
+    pass through every detected corner.
+
+    Mapping is by cumulative-distance projection: each lap's GPS trace is
+    walked, and samples whose lap-cumulative distance falls within a
+    corner's [start_distance_m, end_distance_m] band are flagged. The
+    span of those flagged timestamps becomes the corner range for that
+    lap.
+
+    Used by the Channels Report's "Corners only" filter and by anything
+    else that wants to mask telemetry to in-corner samples.
+    """
+    corners = await list_corners(session_id)
+    if not corners:
+        return {}
+
+    lat_pair = _try_read_channel(session_id, ["GPS Latitude", "GPS_Latitude"])
+    lon_pair = _try_read_channel(session_id, ["GPS Longitude", "GPS_Longitude"])
+    if not (lat_pair and lon_pair):
+        return {}
+
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT num, start_time_ms, end_time_ms FROM laps "
+            "WHERE session_id = ? AND num >= 0 AND duration_ms > 0 ORDER BY num",
+            (session_id,),
+        )
+        laps = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    lat_ts, lat_vals = lat_pair
+    lon_ts, lon_vals = lon_pair
+
+    out: dict[int, list[tuple[int, int]]] = {}
+    for lap in laps:
+        lap_start = int(lap["start_time_ms"])
+        lap_end = int(lap["end_time_ms"])
+        lap_num = int(lap["num"])
+        if lap_end - lap_start < 1000:
+            continue
+        step_ms = 40.0
+        grid = np.arange(lap_start, lap_end, step_ms)
+        if grid.size < 5:
+            continue
+        lat_r = np.interp(grid, lat_ts, lat_vals)
+        lon_r = np.interp(grid, lon_ts, lon_vals)
+        cum = _cumulative_distance(lat_r, lon_r)
+        ranges: list[tuple[int, int]] = []
+        for corner in corners:
+            start_d = float(corner["start_distance_m"])
+            end_d = float(corner["end_distance_m"])
+            mask = (cum >= start_d) & (cum <= end_d)
+            if not mask.any():
+                continue
+            ts_in = grid[mask]
+            if ts_in.size >= 2:
+                ranges.append((int(ts_in[0]), int(ts_in[-1])))
+        if ranges:
+            out[lap_num] = ranges
+    return out

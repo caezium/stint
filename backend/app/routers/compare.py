@@ -78,6 +78,120 @@ async def cross_session_delta_t(req: CompareDeltaRequest):
     }
 
 
+def _project_lap_to_corner_distance_bands(
+    session_id: str, lap: int, corner_distance_bands: list[tuple[int, str, float, float]]
+) -> dict[int, dict]:
+    """Per-corner stats for a single (session, lap) given corner distance
+    bands defined in the rep-lap distance domain. Returns
+    { corner_num: { entry_speed, min_speed, exit_speed, corner_ms } }."""
+    table = get_resampled_lap_data(
+        session_id, ["GPS Latitude", "GPS Longitude", "GPS Speed"], lap
+    )
+    if table is None:
+        return {}
+    tc = np.asarray(table.column("timecodes").to_pylist(), dtype=np.float64)
+    lats = np.asarray(table.column("GPS Latitude").to_pylist(), dtype=np.float64)
+    lons = np.asarray(table.column("GPS Longitude").to_pylist(), dtype=np.float64)
+    spd = np.asarray(table.column("GPS Speed").to_pylist(), dtype=np.float64)
+    if tc.size < 5:
+        return {}
+    # GPS speed is usually km/h; treat values >40 as km/h.
+    spd_mps = spd / 3.6 if float(np.nanmax(spd)) > 40.0 else spd
+    # Cumulative distance per lap.
+    R = 6371000.0
+    dist = np.zeros(lats.size)
+    for i in range(1, lats.size):
+        lat1, lat2 = math.radians(lats[i - 1]), math.radians(lats[i])
+        dlat = lat2 - lat1
+        dlon = math.radians(lons[i] - lons[i - 1])
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        )
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        dist[i] = dist[i - 1] + R * c
+    out: dict[int, dict] = {}
+    for corner_num, _label, start_d, end_d in corner_distance_bands:
+        mask = (dist >= start_d) & (dist <= end_d)
+        if not mask.any():
+            continue
+        ts_in = tc[mask]
+        spd_in = spd_mps[mask]
+        if ts_in.size < 2:
+            continue
+        out[int(corner_num)] = {
+            "entry_speed": float(spd_in[0] * 3.6),
+            "exit_speed": float(spd_in[-1] * 3.6),
+            "min_speed": float(spd_in.min() * 3.6),
+            "corner_ms": int(ts_in[-1] - ts_in[0]),
+        }
+    return out
+
+
+@router.post("/compare/per-corner")
+async def compare_per_corner(req: CompareDeltaRequest):
+    """Corner-by-corner comparison between two laps. Uses corners detected
+    on the *ref* session (falling back to compare session if ref has no
+    corners) and projects each lap's GPS trace onto those distance bands.
+
+    Returns one row per corner with each lap's entry / min / exit / time-
+    in-corner plus the lap's per-corner delta in ms (compare − ref).
+    Powers the "Where am I losing time?" panel on the compare page.
+    """
+    from ..corners import list_corners as _list_corners
+    # Try ref first, fall back to compare.
+    ref_corners = await _list_corners(req.ref.session_id)
+    cmp_corners = await _list_corners(req.compare.session_id)
+    used_session: Optional[str] = None
+    chosen = None
+    if ref_corners:
+        chosen = ref_corners
+        used_session = req.ref.session_id
+    elif cmp_corners:
+        chosen = cmp_corners
+        used_session = req.compare.session_id
+    if not chosen:
+        return {"corners": [], "ref_session": None, "compare_session": None, "source_session": None}
+
+    bands = [
+        (
+            int(c["corner_num"]),
+            (c.get("label") or ""),
+            float(c["start_distance_m"]),
+            float(c["end_distance_m"]),
+        )
+        for c in chosen
+    ]
+    ref_proj = _project_lap_to_corner_distance_bands(
+        req.ref.session_id, req.ref.lap, bands
+    )
+    cmp_proj = _project_lap_to_corner_distance_bands(
+        req.compare.session_id, req.compare.lap, bands
+    )
+    rows = []
+    for c in chosen:
+        n = int(c["corner_num"])
+        r = ref_proj.get(n)
+        x = cmp_proj.get(n)
+        ref_ms = r["corner_ms"] if r else None
+        cmp_ms = x["corner_ms"] if x else None
+        delta_ms = (cmp_ms - ref_ms) if (ref_ms is not None and cmp_ms is not None) else None
+        rows.append({
+            "corner_num": n,
+            "label": c.get("label") or "",
+            "direction": c.get("direction") or "",
+            "ref": r,
+            "compare": x,
+            "delta_ms": delta_ms,
+        })
+    return {
+        "corners": rows,
+        "source_session": used_session,
+        "ref": {"session_id": req.ref.session_id, "lap": req.ref.lap},
+        "compare": {"session_id": req.compare.session_id, "lap": req.compare.lap},
+    }
+
+
 @router.post("/sessions/{session_id}/laps/{lap_num}/delta-points")
 async def lap_delta_points(
     session_id: str, lap_num: int, req: LapDeltaPointsRequest

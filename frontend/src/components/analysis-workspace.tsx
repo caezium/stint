@@ -5,7 +5,8 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useSessionStore } from "@/stores/session-store";
 import { useLapStore } from "@/stores/lap-store";
 import { useCursorStore } from "@/stores/cursor-store";
-import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchLapDeltaPoints, fetchMathDefaults, fetchDefaultReference, type TrackData, type TrackOverlayData, type Track, type ReferenceLap } from "@/lib/api";
+import { fetchTrack, fetchTrackById, fetchTrackOverlay, fetchLapDeltaPoints, fetchMathDefaults, fetchDefaultReference, fetchCorners, type TrackData, type TrackOverlayData, type Track, type ReferenceLap, type Corner } from "@/lib/api";
+import type { ChartCornerBand } from "@/components/charts/telemetry-chart";
 import { PlaybackControls } from "@/components/playback-controls";
 import { TelemetryChart } from "@/components/charts/telemetry-chart";
 import { DeltaChart } from "@/components/charts/delta-chart";
@@ -109,6 +110,10 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
   const [trackOverlay, setTrackOverlay] = useState<TrackOverlayData | null>(null);
   const [trackColorChannel, setTrackColorChannel] = useState("speed");
   const [referenceLap, setReferenceLap] = useState<ReferenceLap | null>(null);
+  const [corners, setCorners] = useState<Corner[]>([]);
+  // Toolbar toggle: do users want the corner shading on the time-series
+  // charts? On by default — they're a free coaching cue.
+  const [showCornerBands, setShowCornerBands] = useState(true);
   const [addChartOpen, setAddChartOpen] = useState(false);
   const [showMathEditor, setShowMathEditor] = useState(false);
   const loadSession = useSessionStore((s) => s.loadSession);
@@ -229,6 +234,22 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
     fetchTrack(sessionId).then(setTrack).catch(() => null);
   }, [sessionId]);
 
+  // Phase 26 follow-up: fetch detected corners so the time-series charts
+  // can shade in-corner regions and the map can pulse the active apex.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCorners(sessionId)
+      .then((cs) => {
+        if (!cancelled) setCorners(cs);
+      })
+      .catch(() => {
+        if (!cancelled) setCorners([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   // Fetch the bound Track for S/F + split overlays on the track map
   useEffect(() => {
     const tid = session?.track_id;
@@ -242,6 +263,37 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
       .catch(() => { if (!cancelled) setBoundTrack(null); });
     return () => { cancelled = true; };
   }, [session?.track_id]);
+
+  // Phase 26 follow-up: project absolute corner timestamps onto the
+  // representative lap's start so charts can paint bands in lap-relative
+  // seconds. Distance bands are already lap-cumulative.
+  const cornerBands = useMemo<ChartCornerBand[] | undefined>(() => {
+    if (!showCornerBands || !session || corners.length === 0) return undefined;
+    const racing = session.laps.filter(
+      (l) => l.num > 0 && l.duration_ms > 0 && !l.is_pit_lap,
+    );
+    if (racing.length === 0) return undefined;
+    const repLap = racing.reduce((a, b) =>
+      b.duration_ms < a.duration_ms ? b : a,
+    );
+    const lapStart = repLap.start_time_ms ?? 0;
+    return corners
+      .map((c) => {
+        const startTs = c.start_ts_ms ?? null;
+        const endTs = c.end_ts_ms ?? null;
+        if (startTs == null || endTs == null) return null;
+        return {
+          num: c.corner_num,
+          label: c.label ?? null,
+          direction: c.direction,
+          startSec: (startTs - lapStart) / 1000,
+          endSec: (endTs - lapStart) / 1000,
+          startM: c.start_distance_m,
+          endM: c.end_distance_m,
+        } satisfies ChartCornerBand;
+      })
+      .filter((b): b is ChartCornerBand => b != null);
+  }, [corners, session, showCornerBands]);
 
   // Parse sf_line / split_lines whether they come as objects or JSON strings
   const { sfLineForMap, splitsForMap } = useMemo(() => {
@@ -791,6 +843,22 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
           <option value="large">Large ⊙</option>
         </select>
 
+        {/* Phase 26 follow-up: toggle corner shading on time-series charts */}
+        {corners.length > 0 && (
+          <label
+            className="flex items-center gap-1 text-[11px] text-muted-foreground cursor-pointer"
+            title={`Shade ${corners.length} detected corners on the charts (sky = right, amber = left)`}
+          >
+            <input
+              type="checkbox"
+              checked={showCornerBands}
+              onChange={(e) => setShowCornerBands(e.target.checked)}
+              className="h-3 w-3 accent-amber-500"
+            />
+            Corners
+          </label>
+        )}
+
         {/* Track color channel selector */}
         <div className="flex items-center gap-1 ml-auto">
           <span className="text-muted-foreground">Track:</span>
@@ -1091,6 +1159,7 @@ export function AnalysisWorkspace({ sessionId }: { sessionId: string }) {
                         chart={chart}
                         sessionId={sessionId}
                         height={chartHeight}
+                        cornerBands={cornerBands}
                       />
                     </div>
                   )}
@@ -1115,10 +1184,12 @@ function ChartRenderer({
   chart,
   sessionId,
   height,
+  cornerBands,
 }: {
   chart: ChartConfig;
   sessionId: string;
   height: number;
+  cornerBands?: ChartCornerBand[];
 }) {
   const session = useSessionStore((s) => s.session);
 
@@ -1129,6 +1200,7 @@ function ChartRenderer({
           channels={chart.channels}
           sessionId={sessionId}
           height={height}
+          corners={cornerBands}
         />
       );
 

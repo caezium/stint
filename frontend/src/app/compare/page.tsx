@@ -7,9 +7,11 @@ import {
   fetchSessions,
   fetchSession,
   fetchCrossSessionDeltaT,
+  fetchComparePerCorner,
   type Session,
   type SessionDetail,
   type DeltaTData,
+  type ComparePerCornerData,
 } from "@/lib/api";
 import { formatLapTime } from "@/lib/constants";
 import { Card, CardContent } from "@/components/ui/card";
@@ -50,6 +52,7 @@ function ComparePageInner() {
   const [detailB, setDetailB] = useState<SessionDetail | null>(null);
 
   const [delta, setDelta] = useState<DeltaTData | null>(null);
+  const [perCorner, setPerCorner] = useState<ComparePerCornerData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +84,7 @@ function ComparePageInner() {
 
   useEffect(() => {
     setDelta(null);
+    setPerCorner(null);
     setError(null);
     if (!a || !b || a.lap <= 0 || b.lap <= 0) return;
     setLoading(true);
@@ -93,6 +97,14 @@ function ComparePageInner() {
         setError(e instanceof Error ? e.message : "Failed to compute delta")
       )
       .finally(() => setLoading(false));
+    // Per-corner is best-effort — silently empty if neither session has
+    // corners detected yet.
+    fetchComparePerCorner(
+      { session_id: a.sessionId, lap: a.lap },
+      { session_id: b.sessionId, lap: b.lap },
+    )
+      .then((d) => setPerCorner(d.corners.length > 0 ? d : null))
+      .catch(() => setPerCorner(null));
   }, [a?.sessionId, a?.lap, b?.sessionId, b?.lap]);
 
   const sessionOptions = useMemo(
@@ -304,6 +316,119 @@ function ComparePageInner() {
                   })}
                 </>
               )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {perCorner && perCorner.corners.length > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <h2 className="font-semibold text-base mb-1">
+              Per-corner comparison
+            </h2>
+            <p className="text-[11px] text-muted-foreground mb-3">
+              Corner-by-corner timing. Negative delta = B is faster through the
+              corner. Big positive numbers are where most of the lap-time gap
+              lives. Bands derived from{" "}
+              <span className="font-mono">
+                {perCorner.source_session === a?.sessionId ? "A" : "B"}
+              </span>
+              ’s detected corners.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular-nums">
+                <thead className="bg-muted/30">
+                  <tr>
+                    <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">
+                      Corner
+                    </th>
+                    <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">
+                      Dir
+                    </th>
+                    <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">
+                      A min
+                    </th>
+                    <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">
+                      B min
+                    </th>
+                    <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">
+                      A time
+                    </th>
+                    <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">
+                      B time
+                    </th>
+                    <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">
+                      Δ (B − A)
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perCorner.corners.map((row) => {
+                    const tone =
+                      row.delta_ms == null
+                        ? "text-muted-foreground"
+                        : row.delta_ms <= 0
+                          ? "text-emerald-400"
+                          : row.delta_ms < 50
+                            ? "text-amber-400"
+                            : "text-red-400";
+                    return (
+                      <tr
+                        key={row.corner_num}
+                        className="border-t border-border/30"
+                      >
+                        <td className="px-2 py-1.5 font-medium">
+                          {row.label || `C${row.corner_num}`}
+                          {row.label ? (
+                            <span className="ml-1.5 text-[10px] text-muted-foreground">
+                              (C{row.corner_num})
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <span
+                            className={
+                              row.direction === "right"
+                                ? "text-sky-400"
+                                : row.direction === "left"
+                                  ? "text-amber-400"
+                                  : "text-muted-foreground"
+                            }
+                          >
+                            {row.direction || "—"}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {row.ref?.min_speed != null
+                            ? `${row.ref.min_speed.toFixed(1)}`
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {row.compare?.min_speed != null
+                            ? `${row.compare.min_speed.toFixed(1)}`
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {row.ref?.corner_ms != null
+                            ? `${(row.ref.corner_ms / 1000).toFixed(3)}s`
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {row.compare?.corner_ms != null
+                            ? `${(row.compare.corner_ms / 1000).toFixed(3)}s`
+                            : "—"}
+                        </td>
+                        <td className={`px-2 py-1.5 text-right font-mono ${tone}`}>
+                          {row.delta_ms != null
+                            ? `${row.delta_ms > 0 ? "+" : ""}${(row.delta_ms / 1000).toFixed(3)}s`
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </CardContent>
         </Card>

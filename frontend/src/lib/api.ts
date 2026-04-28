@@ -484,6 +484,45 @@ export async function fetchCrossSessionDeltaT(
   return res.json();
 }
 
+// ---- Phase 26 follow-up: per-corner compare ----
+
+export interface ComparePerCornerSide {
+  entry_speed: number;
+  exit_speed: number;
+  min_speed: number;
+  corner_ms: number;
+}
+
+export interface ComparePerCornerRow {
+  corner_num: number;
+  label: string;
+  direction: "left" | "right" | "";
+  ref: ComparePerCornerSide | null;
+  compare: ComparePerCornerSide | null;
+  delta_ms: number | null;
+}
+
+export interface ComparePerCornerData {
+  corners: ComparePerCornerRow[];
+  source_session: string | null;
+  ref: { session_id: string; lap: number };
+  compare: { session_id: string; lap: number };
+}
+
+export async function fetchComparePerCorner(
+  ref: { session_id: string; lap: number },
+  compare: { session_id: string; lap: number },
+): Promise<ComparePerCornerData> {
+  const res = await fetch(`/api/compare/per-corner`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ref, compare }),
+  });
+  if (!res.ok)
+    throw new Error(`Failed to fetch per-corner compare: ${res.status}`);
+  return res.json();
+}
+
 // ---- Channel stats ----
 
 export interface ChannelStats {
@@ -1948,13 +1987,15 @@ export async function fetchChannelsReport(
   sessionId: string,
   channels: string[],
   stats: ChannelStatKey[] = ["min", "max", "avg", "p90"],
-  includePitLaps = false
+  includePitLaps = false,
+  cornersOnly = false,
 ): Promise<ChannelsReportData> {
   const params = new URLSearchParams({
     channels: channels.join(","),
     stats: stats.join(","),
   });
   if (includePitLaps) params.set("include_pit_laps", "1");
+  if (cornersOnly) params.set("corners_only", "1");
   const res = await fetch(`/api/sessions/${sessionId}/channels-report?${params}`);
   if (!res.ok) throw new Error(`Failed to fetch channels report: ${res.status}`);
   return res.json();

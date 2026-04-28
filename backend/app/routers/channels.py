@@ -710,6 +710,11 @@ async def channels_report(
         description="Comma-separated subset of: min,max,avg,p50,p90,p99,std,count",
     ),
     include_pit_laps: bool = Query(False),
+    corners_only: bool = Query(
+        False,
+        description="When true, restrict aggregation to samples whose timestamp "
+        "falls inside a detected corner range for that lap.",
+    ),
 ):
     """Return per-lap aggregate stats for a set of channels.
 
@@ -750,6 +755,14 @@ async def channels_report(
 
     if not lap_rows:
         raise HTTPException(404, f"No laps for session {session_id}")
+
+    # Phase 26 follow-up: when corners_only is set, fetch per-lap corner time
+    # ranges so we can mask each lap's resampled table down to in-corner
+    # samples before computing stats.
+    corner_ranges: dict[int, list[tuple[int, int]]] = {}
+    if corners_only:
+        from ..corners import corner_time_ranges_per_lap
+        corner_ranges = await corner_time_ranges_per_lap(session_id)
 
     def _compute(values: np.ndarray) -> dict[str, float | None]:
         if values.size == 0:
@@ -797,9 +810,35 @@ async def channels_report(
         if table is None:
             cells = {c: {s: None for s in wanted_stats} for c in ch_list}
         else:
+            # Build a sample-level mask for corners_only filtering.
+            # Tables are time-keyed via the "timecodes" column (ms since
+            # session start). We build a boolean mask spanning the lap and
+            # set True only for samples falling inside any corner range.
+            corner_mask: Optional[np.ndarray] = None
+            if corners_only:
+                ranges = corner_ranges.get(int(lap["num"]), [])
+                try:
+                    tc = np.asarray(
+                        table.column("timecodes").to_pylist(), dtype=np.float64
+                    )
+                except Exception:
+                    tc = None
+                if tc is not None and tc.size and ranges:
+                    m = np.zeros(tc.size, dtype=bool)
+                    for s_ts, e_ts in ranges:
+                        m |= (tc >= float(s_ts)) & (tc <= float(e_ts))
+                    corner_mask = m
+                else:
+                    # No corner data → emit empty cells rather than the
+                    # whole lap (clearer signal in the UI).
+                    corner_mask = np.zeros(
+                        tc.size if tc is not None else 0, dtype=bool
+                    )
             for c in ch_list:
                 try:
                     col = np.asarray(table.column(c).to_pylist(), dtype=np.float64)
+                    if corner_mask is not None and corner_mask.size == col.size:
+                        col = col[corner_mask]
                     col = col[np.isfinite(col)]
                 except Exception:
                     col = np.asarray([], dtype=np.float64)

@@ -52,6 +52,11 @@ export function ChannelsReportPanel({ sessionId }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Phase 26 follow-up: when on, the backend filters aggregations to
+  // samples whose timestamps fall inside detected corners — coaching
+  // gold for "what does my brake pressure / RPM look like in corners
+  // only, ignoring straights".
+  const [cornersOnly, setCornersOnly] = useState(false);
 
   useEffect(() => {
     fetchSession(sessionId).then(setSession).catch(() => setSession(null));
@@ -81,7 +86,7 @@ export function ChannelsReportPanel({ sessionId }: Props) {
     }
     let cancelled = false;
     setLoading(true);
-    fetchChannelsReport(sessionId, channels, stats)
+    fetchChannelsReport(sessionId, channels, stats, false, cornersOnly)
       .then((d) => !cancelled && (setData(d), setError(null)))
       .catch(
         (e: unknown) =>
@@ -91,7 +96,7 @@ export function ChannelsReportPanel({ sessionId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, channels, stats]);
+  }, [sessionId, channels, stats, cornersOnly]);
 
   const availableChannels = useMemo(
     () =>
@@ -120,18 +125,42 @@ export function ChannelsReportPanel({ sessionId }: Props) {
       <CardContent className="p-0">
         <div className="px-5 py-3 border-b border-border flex items-start justify-between gap-3">
           <div>
-            <h2 className="font-semibold text-sm">Channels report</h2>
+            <h2 className="font-semibold text-sm">
+              Channels report
+              {cornersOnly ? (
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-400">
+                  Corners only
+                </span>
+              ) : null}
+            </h2>
             <p className="text-[11px] text-muted-foreground mt-0.5">
               Per-lap min / max / average / percentile for selected channels.
+              {cornersOnly
+                ? " Aggregates restricted to in-corner samples — straights excluded."
+                : ""}
             </p>
           </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => setPickerOpen((v) => !v)}
-          >
-            {pickerOpen ? "Done" : "Edit"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCornersOnly((v) => !v)}
+              className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                cornersOnly
+                  ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                  : "border-border/50 text-muted-foreground hover:text-foreground"
+              }`}
+              title="Toggle: aggregate only over in-corner samples (no straights)"
+            >
+              Corners only
+            </button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setPickerOpen((v) => !v)}
+            >
+              {pickerOpen ? "Done" : "Edit"}
+            </Button>
+          </div>
         </div>
 
         {pickerOpen && (

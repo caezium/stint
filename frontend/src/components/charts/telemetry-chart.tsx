@@ -28,10 +28,26 @@ import {
   type ChartContextMenuState,
 } from "@/components/chart-context-menu";
 
+/** Phase 26 follow-up: shaded band drawn under the series for each
+ * detected corner. `startSec` / `endSec` are seconds from the rep lap
+ * start, `startM` / `endM` are cumulative metres of the rep lap; the
+ * chart picks whichever matches its current x-axis mode.
+ */
+export interface ChartCornerBand {
+  num: number;
+  label?: string | null;
+  direction: "left" | "right";
+  startSec: number;
+  endSec: number;
+  startM: number;
+  endM: number;
+}
+
 interface TelemetryChartProps {
   channels: string[];
   sessionId: string;
   height?: number;
+  corners?: ChartCornerBand[];
 }
 
 /** Shared cursor sync key for all telemetry charts */
@@ -58,6 +74,7 @@ export function TelemetryChart({
   channels,
   sessionId,
   height = 260,
+  corners,
 }: TelemetryChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
@@ -374,6 +391,33 @@ export function TelemetryChart({
       axes,
       series,
       hooks: {
+        // Phase 26 follow-up: paint shaded vertical bands under each
+        // detected corner before series + grid render. Sky tint for
+        // right-handers, amber for left-handers; intensity scales with
+        // |peak g| so harder corners stand out.
+        drawClear: [
+          (u: uPlot) => {
+            if (!corners || corners.length === 0) return;
+            const ctx = u.ctx;
+            const top = u.bbox.top;
+            const bottomY = u.bbox.top + u.bbox.height;
+            ctx.save();
+            for (const c of corners) {
+              const sVal = useDistance ? c.startM : c.startSec;
+              const eVal = useDistance ? c.endM : c.endSec;
+              if (sVal == null || eVal == null || eVal <= sVal) continue;
+              const x1 = u.valToPos(sVal, "x", true);
+              const x2 = u.valToPos(eVal, "x", true);
+              if (!isFinite(x1) || !isFinite(x2)) continue;
+              ctx.fillStyle =
+                c.direction === "right"
+                  ? "rgba(56, 189, 248, 0.10)"
+                  : "rgba(245, 158, 11, 0.10)";
+              ctx.fillRect(x1, top, x2 - x1, bottomY - top);
+            }
+            ctx.restore();
+          },
+        ],
         setCursor: [
           (u: uPlot) => {
             const idx = u.cursor.idx;
@@ -405,7 +449,7 @@ export function TelemetryChart({
     };
 
     return { data: chartData, options: opts };
-  }, [activeLaps, lapDataMap, distDataMap, channels, height, setCursorMs, setZoomRange, xAxisMode, speedUnit, temperatureUnit, distanceUnit, angularUnit, sessionChannels]);
+  }, [activeLaps, lapDataMap, distDataMap, channels, height, setCursorMs, setZoomRange, xAxisMode, speedUnit, temperatureUnit, distanceUnit, angularUnit, sessionChannels, corners]);
 
   // Resize observer to keep chart width in sync with container
   const handleResize = useCallback(() => {
