@@ -1,25 +1,55 @@
 # Stint
 
-Stint is a two-service telemetry analysis app for AiM `.xrk` and `.xrz` files.
+Racing telemetry analysis for AiM `.xrk` / `.xrz` log files. Upload a session, browse laps, compare overlays, dig into corners and channels, and let an AI coach surface what changed.
 
-- `backend/`: FastAPI service that parses uploads with `libxrk`, stores metadata in SQLite, and caches channel data as Arrow IPC files.
-- `frontend/`: Next.js app for browsing sessions, viewing lap summaries, and comparing telemetry overlays.
-- `data/`: persisted SQLite database, original uploads, and Arrow cache files.
+- **`backend/`** — FastAPI service. Parses uploads with `libxrk`, stores metadata in SQLite, caches channel data as Arrow IPC, and runs anomaly / debrief / coaching pipelines.
+- **`frontend/`** — Next.js app. Sessions browser, lap analysis workspace, compare page, track maps, reports, chat.
+- **`data/`** — persisted SQLite database, original uploads, and per-session Arrow cache.
 
-## Run
+## Features
 
-From the project root:
+**Sessions & laps**
+- Multi-file upload, duplicate detection, soft-delete trash, manual collections, tag chips
+- Driver and vehicle aggregates, sticky filters, grid/list views
+- Hover-preview popovers, sparklines, benchmark bars
+
+**Analysis workspace**
+- Lap overlays with snap-to-cursor, distance-mode cursor, live tags, local-time toggle
+- Reference laps as first-class citizens
+- Histogram and scatter views, G-G diagram preset (matches AiM `GPS_*Acc` channels)
+- Math channels with timing and filter functions, on-demand recompute
+- Channel alarms, per-channel settings, profile export/import
+
+**Tracks & corners**
+- Track maps with satellite tiles and GPS offset calibration (Leaflet)
+- Splits/sectors editor — label, type, merge, copy, up to 8 per track
+- Auto-detected corners with apex, labels, per-lap timestamps, click-to-highlight on map
+
+**Reports**
+- Split Report and Channels Report tables
+- Report Builder with templates, PDF export, batch zip
+
+**AI (OpenRouter)**
+- Anomaly watchdog — karting-tuned detectors flag unusual laps on upload
+- Auto-debrief narrative + coaching plan, with cross-session memory
+- Chat agent with chart right-click, evidence links, proposal cards (AI SDK v5)
+- Pre-session brief and shareable coach links
+
+**Other**
+- Weather auto-fetch from log time (Open-Meteo)
+- Persistent job queue with backfill progress
+- Driver dashboard, dedicated `/chat` page, mobile drawer
+
+## Run with Docker
 
 ```bash
 docker compose up --build
 ```
 
-Services:
-
 - Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8001/api/health`
+- Backend health: `http://localhost:8001/api/health`
 
-## Local Development
+## Local development
 
 Frontend:
 
@@ -56,8 +86,12 @@ Backend:
 ./.venv-backend/bin/python -m unittest discover -s backend/tests
 ```
 
-## Storage Layout
+## Storage layout
 
-- `data/telemetry.db`: session, channel, and lap metadata.
-- `data/xrk/`: original uploads stored by session ID.
-- `data/cache/<session_id>/`: one Arrow file per channel plus cached session metadata.
+- `data/telemetry.db` — sessions, channels, laps, corners, splits, anomalies, drivers, collections.
+- `data/xrk/` — original uploads keyed by session ID.
+- `data/cache/<session_id>/` — one Arrow file per channel plus cached session metadata.
+
+## Docs
+
+- `docs/racestudio-parity.md` — RaceStudio 3 feature parity matrix and karting priority roadmap.
